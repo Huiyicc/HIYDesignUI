@@ -31,6 +31,7 @@ public:
   void toggleGuides();
   void clearGuides();
   hiyui::Rect geometry(const std::string &id) const;
+  std::optional<hiyui::Point> positionIn(const std::string &id, const std::string &parentId) const;
   void nudge(int dx, int dy);
   bool previewSelection(std::string &error);
   std::function<bool()> beforeEdit;

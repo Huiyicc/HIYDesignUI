@@ -216,6 +216,13 @@ Rect DesignSurface::geometry(const std::string &id) const {
   return result;
 }
 
+std::optional<Point> DesignSurface::positionIn(const std::string &id, const std::string &parentId) const {
+  const auto node = widget(id);
+  const auto parent = widget(parentId);
+  if (!node || !parent || !node->isVisible() || !parent->isVisible()) return std::nullopt;
+  return inParent(parentId, node->toScreenPx({0, 0}));
+}
+
 Rect DesignSurface::screenBounds(const std::string &id) const {
   Rect result;
   widget(id).with([&](Widget &node) { result = transformed(node); });

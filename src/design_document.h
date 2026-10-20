@@ -72,6 +72,8 @@ public:
   const DesignNode *clipboard() const { return clipboard_ ? &*clipboard_ : nullptr; }
   bool paste(const std::string &parentId);
   bool reorder(const std::string &id, int direction);
+  bool canMove(const std::string &id, const std::string &parentId, size_t index) const;
+  bool move(std::string id, std::string parentId, size_t index);
   void reset(DocumentState value, bool saved);
   void checkpoint();
   bool undo();

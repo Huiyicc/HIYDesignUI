@@ -89,6 +89,36 @@ bool DesignDocument::reorder(const std::string &id, int direction) {
   return true;
 }
 
+bool DesignDocument::canMove(const std::string &id, const std::string &parentId, size_t index) const {
+  const auto *node = find(id);
+  const auto *source = parent(id);
+  const auto *target = find(parentId);
+  if (!node || !source || !target || node->locked || source->locked || target->locked ||
+      index > target->children.size() || findNode(*node, parentId)) return false;
+  if (source == target) {
+    const auto it = std::find_if(source->children.begin(), source->children.end(),
+                                 [&](const auto &child) { return child.id == id; });
+    const auto current = static_cast<size_t>(it - source->children.begin());
+    if (index == current || index == current + 1) return false;
+  }
+  return true;
+}
+
+bool DesignDocument::move(std::string id, std::string parentId, size_t index) {
+  if (!canMove(id, parentId, index)) return false;
+  auto *source = parent(id);
+  auto it = std::find_if(source->children.begin(), source->children.end(),
+                         [&](const auto &child) { return child.id == id; });
+  if (source->id == parentId && static_cast<size_t>(it - source->children.begin()) < index) --index;
+  DesignNode node = std::move(*it);
+  source->children.erase(it);
+  auto *target = find(parentId);
+  target->children.insert(target->children.begin() + static_cast<ptrdiff_t>(index), std::move(node));
+  selected = std::move(id);
+  checkpoint();
+  return true;
+}
+
 void DesignDocument::reset(DocumentState value, bool saved) {
   state = std::move(value);
   selected = state.root.id;

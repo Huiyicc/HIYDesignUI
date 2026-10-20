@@ -34,6 +34,18 @@ private:
   void refresh(bool properties = true);
   void selectionChanged(bool preserveEditor = false);
   void refreshTree();
+  void syncTreeSelection(bool reveal = false);
+  enum class TreeAction { Up, Down, First, Last, Outdent, Indent, Delete };
+  struct TreeMove {
+    std::string parent;
+    size_t index = 0;
+  };
+  std::vector<hiyui::ContextMenuItem> treeMenu(hiyui::TreeNodeId id);
+  std::optional<TreeMove> treeDestination(const std::string &id, TreeAction action) const;
+  bool canMoveNode(const std::string &id, const TreeMove &destination) const;
+  bool applyTreeMove(const std::string &id, const TreeMove &destination);
+  void treeAction(const std::string &id, TreeAction action);
+  void queueTreeDrop(hiyui::TreeNodeId source, hiyui::TreeNodeId target, hiyui::TreeDropPosition position);
   void queueInspector();
   bool commitEdits(bool cancelGesture = true);
   bool apply(DocumentState value, std::string selected, std::string &error, bool properties = true);
@@ -97,6 +109,7 @@ private:
   bool rightVisible_ = true;
   bool compact_ = false;
   bool inspectorQueued_ = false;
+  bool treeDropQueued_ = false;
   bool arranging_ = false;
   bool themeAnimation_ = true;
 };

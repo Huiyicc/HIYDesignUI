@@ -377,7 +377,7 @@ void DesignerApp::buildInspector(Widget &parent) {
   Box treeHost({.bg = color(panel)});
   treeHost.init(host).fill().hidden().ref(treeHost_);
   appearance_.background(treeHost, panel);
-  Tree tree({.rowHeight = 28, .indent = 14, .showConnectLine = true,
+  Tree tree({.rowHeight = 28, .indent = 14, .showConnectLine = true, .draggable = true,
              .bg = color(panel), .textColor = color(foreground), .selectedBg = 0x04395e,
              .hoverBg = color(raised), .connectLineColor = color(line), .fontSize = 12});
   tree.init(treeHost).fill().ref(tree_);
@@ -387,7 +387,12 @@ void DesignerApp::buildInspector(Widget &parent) {
         .connectLineColor = p[EditorColor::Border], .selectedTextColor = p[EditorColor::Text]});
   });
   tree.onChange([this](const std::vector<TreeNodeId> &ids) {
-    if (!ids.empty() && treeIds_.contains(ids.front())) surface_->select(treeIds_[ids.front()]);
+    if (treeDropQueued_ || ids.empty() || !treeIds_.contains(ids.front())) return;
+    if (!surface_->select(treeIds_.at(ids.front()))) syncTreeSelection();
+  });
+  tree.nodeContextMenu([this](TreeNodeId id) { return treeMenu(id); });
+  tree.onDrop([this](TreeNodeId source, TreeNodeId target, TreeDropPosition position) {
+    queueTreeDrop(source, target, position);
   });
   auto actions = strip(right, 32);
   actionButton(actions, "重置属性", 0, [this] { inspector_->resetSelected(); });
@@ -521,11 +526,13 @@ void DesignerApp::selectionChanged(bool preserveEditor) {
   const auto rect = surface_->geometry(document_.selected);
   position_->text(node && catalog_.visual(document_, *node) ? "X " + std::to_string(rect.x) + "   Y " + std::to_string(rect.y) +
       "   W " + std::to_string(rect.w) + "   H " + std::to_string(rect.h) : "");
-  for (const auto &[id, name] : treeIds_)
-    if (name == document_.selected) { tree_->selectNode(id); break; }
+  syncTreeSelection();
 }
 
 void DesignerApp::refreshTree() {
+  if (!tree_) return;
+  std::map<std::string, bool> expanded;
+  for (const auto &[id, name] : treeIds_) expanded[name] = tree_->isExpanded(id);
   treeIds_.clear();
   treeLabels_.clear();
   TreeNodeId next = 1;
@@ -535,11 +542,12 @@ void DesignerApp::refreshTree() {
     treeIds_[value.id] = node.id;
     treeLabels_.push_back(node.id + "  : " + nodeName(node) + (node.locked ? "  [锁定]" : ""));
     value.text = treeLabels_.back().c_str();
-    value.expanded = true;
+    value.expanded = !expanded.contains(node.id) || expanded.at(node.id);
     for (const auto &child : node.children) value.children.push_back(self(self, child));
     return value;
   };
   tree_->nodes({make(make, document_.state.root)});
+  syncTreeSelection();
 }
 
 void DesignerApp::queueInspector() {
