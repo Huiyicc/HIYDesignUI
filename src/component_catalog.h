@@ -14,6 +14,7 @@ struct ComponentEntry {
   int width = 120;
   int height = 36;
   hiyui::XmlWidgetMetadata metadata;
+  uint32_t icon() const;
 };
 
 class ComponentCatalog {

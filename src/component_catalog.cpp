@@ -1,11 +1,21 @@
 #include "component_catalog.h"
 #include "project_io.h"
+#include <icon_codepoints.h>
 #include <algorithm>
 #include <sstream>
 #include <unordered_set>
 
 namespace hiydesign {
 using namespace hiyui;
+
+uint32_t ComponentEntry::icon() const {
+  const auto field = metadata.extensions.find("ShowIcon");
+  uint64_t codepoint = 0;
+  if (field != metadata.extensions.end() && xmlTryParseUInt(field->second, codepoint) &&
+      codepoint > 0 && codepoint <= 0x10ffff && (codepoint < 0xd800 || codepoint > 0xdfff))
+    return static_cast<uint32_t>(codepoint);
+  return metadata.design.icon ? metadata.design.icon : HIYUI_ICON_WIDGETS;
+}
 
 ComponentCatalog::ComponentCatalog() {
   registerBuiltinXmlWidgets();

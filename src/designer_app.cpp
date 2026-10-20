@@ -232,7 +232,7 @@ void DesignerApp::buildPalette(Widget &parent) {
       button.height(26).fillWidth().bg(color(panel)).ref(ref).pressLock().scrollChain(false);
       HBox content({.gap = 9, .bg = HIYUI_TRANSPARENT, .radius = 0});
       content.init(button).fill().clickable(false);
-      Icon icon({.codepoint = entry.metadata.design.icon ? entry.metadata.design.icon : HIYUI_ICON_WIDGETS, .size = 16});
+      Icon icon({.codepoint = entry.icon(), .size = 16});
       icon.init(content).size(16, 16).color(0x7fb3e0).clickable(false);
       Ref<Icon> iconRef;
       icon.ref(iconRef);
@@ -542,6 +542,7 @@ void DesignerApp::refreshTree() {
     treeIds_[value.id] = node.id;
     treeLabels_.push_back(node.id + "  : " + nodeName(node) + (node.locked ? "  [锁定]" : ""));
     value.text = treeLabels_.back().c_str();
+    if (const auto *entry = catalog_.owner(document_, node)) value.iconCodepoint = entry->icon();
     value.expanded = !expanded.contains(node.id) || expanded.at(node.id);
     for (const auto &child : node.children) value.children.push_back(self(self, child));
     return value;
