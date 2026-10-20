@@ -6,6 +6,7 @@
 namespace hiydesign {
 
 std::string layoutXml(const DocumentState &document);
+std::string windowXml(const DocumentState &document);
 std::string projectXml(const DocumentState &document);
 bool parseProject(const std::string &xml, DocumentState &document, std::string &error);
 bool readProject(const std::filesystem::path &path, DocumentState &document, std::string &error);

@@ -110,6 +110,18 @@ std::string layoutXml(const DocumentState &document) {
   return toString(xml);
 }
 
+std::string windowXml(const DocumentState &document) {
+  pugi::xml_document xml;
+  auto window = xml.append_child("Window");
+  window.append_attribute("xmlns") = "urn:hiyui:ui";
+  window.append_attribute("title") = document.title.c_str();
+  window.append_attribute("width") = document.width;
+  window.append_attribute("height") = document.height;
+  window.append_attribute("borderless") = document.device >= 2 && document.borderless;
+  writeNode(window, document.root, false);
+  return toString(xml);
+}
+
 std::string projectXml(const DocumentState &document) {
   pugi::xml_document xml;
   auto project = xml.append_child("HIYDesignUI");

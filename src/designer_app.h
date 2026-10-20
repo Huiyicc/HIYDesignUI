@@ -28,6 +28,7 @@ private:
   hiyui::HBox strip(hiyui::Widget &parent, int height, EditorColor role = EditorColor::Panel);
   uint32_t color(EditorColor role) const { return appearance_.color(role); }
   void refreshColors();
+  void refreshThemeButton();
   void toggleTheme();
   void responsive();
   void refresh(bool properties = true);
@@ -47,7 +48,7 @@ private:
   void newProject(bool sample);
   void openProject();
   void save(bool saveAs = false, std::function<void()> after = {});
-  void exportLayout();
+  void exportLayout(bool withWindow = false);
   void preview();
   hiyui::TitleBarProps previewTitleBar() const;
   void confirmDiscard(std::function<void()> action);

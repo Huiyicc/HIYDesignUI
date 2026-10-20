@@ -2,6 +2,7 @@
 #include "project_io.h"
 #include <hiyui/misc/async.h>
 #include <hiyui/misc/hotkey.h>
+#include <hiyui/xml/xml_window.h>
 #include <icon_codepoints.h>
 #include <algorithm>
 #include <cctype>
@@ -153,6 +154,7 @@ void DesignerApp::buildMenus(Widget &parent) {
           item("打开项目…", [this] { openProject(); }, {.sdlKey = 'o', .primary = true}),
           item("保存", [this] { save(); }, {.sdlKey = 's', .primary = true}),
           item("另存为…", [this] { save(true); }, {.sdlKey = 's', .primary = true, .shift = true}),
+          item("导出窗口 XML…", [this] { exportLayout(true); }),
           item("导出布局 XML…", [this] { exportLayout(); }),
           item("打开登录示例", [this] { newProject(true); })}},
       {.text = "编辑", .children = {
@@ -174,16 +176,19 @@ void DesignerApp::buildMenus(Widget &parent) {
             if (!themeAnimation_) appearance_.change(appearance_.dark(), false);
             status(themeAnimation_ ? "主题动画已开启" : "主题动画已关闭");
           }),
-          item("布局 XML", [this] { showXml(!showXml_); })}},
+          item("窗口 XML", [this] { showXml(!showXml_); })}},
       {.text = "运行", .children = {item("交互预览", [this] { preview(); })}},
       {.text = "帮助", .children = {
-          item("画布操作", [this] { log("拖入或框选创建；拖动主体移动；边框手柄调整尺寸；方向键微调；Delete 删除；Esc 取消。自动布局中的拖动改变顺序。"); }),
+          item("画布操作", [this] { log("拖入或框选创建；拖动主体移动；边框手柄调整尺寸；靠近辅助线吸附，按住 Ctrl 临时关闭；方向键微调；Delete 删除；Esc 取消。自动布局中的拖动改变顺序。"); }),
           item("响应式布局", [this] { log("Box 使用绝对定位。VBox / HBox / FlowBox 使用自动布局；fill、flex、maxWidth 控制随视口变化的尺寸。XML 页展示当前真实布局。"); })}}
   });
 }
 
 void DesignerApp::buildToolbar(Widget &parent) {
-  auto row = strip(parent, 38, raised);
+  auto toolbar = strip(parent, 38, raised);
+  toolbar.scrollMode(ScrollMode::Off);
+  auto row = strip(toolbar, 38, raised);
+  row.width(0).flex(1).padding(0);
   actionButton(row, nullptr, HIYUI_ICON_ADD, [this] { newProject(false); }).tooltip("新建项目");
   actionButton(row, nullptr, HIYUI_ICON_FOLDER_OPEN, [this] { openProject(); }).tooltip("打开项目");
   actionButton(row, nullptr, HIYUI_ICON_SAVE, [this] { save(); }).tooltip("保存项目 XML");
@@ -197,11 +202,13 @@ void DesignerApp::buildToolbar(Widget &parent) {
   actionButton(row, "选择", HIYUI_ICON_NEAR_ME, [this] { surface_->tool({}); });
   auto previewButton = actionButton(row, "预览", HIYUI_ICON_PLAY_ARROW, [this] { preview(); });
   appearance_.foreground(previewButton, EditorColor::Success);
-  actionButton(row, "导出 XML", 0, [this] { exportLayout(); });
+  actionButton(row, "导出 XML", 0, [this] { exportLayout(true); }).tooltip("导出窗口 XML");
   caption(row, "│", line);
   actionButton(row, "组件", 0, [this] { togglePanel(false); });
   actionButton(row, "属性", 0, [this] { togglePanel(true); });
-  actionButton(row, "浅色", 0, [this] { toggleTheme(); }).ref(themeButton_);
+  actionButton(toolbar, nullptr, HIYUI_ICON_LIGHT_MODE, [this] { toggleTheme(); })
+      .width(32).ref(themeButton_);
+  refreshThemeButton();
 }
 
 void DesignerApp::buildPalette(Widget &parent) {
@@ -388,6 +395,15 @@ void DesignerApp::buildInspector(Widget &parent) {
 void DesignerApp::toggleTheme() {
   if (fileDialog_ || confirmShade_) return;
   appearance_.change(!appearance_.dark(), themeAnimation_);
+  refreshThemeButton();
+}
+
+void DesignerApp::refreshThemeButton() {
+  if (!themeButton_) return;
+  const bool dark = appearance_.dark();
+  const char *label = dark ? "切换浅色主题" : "切换深色主题";
+  themeButton_->icon(dark ? HIYUI_ICON_LIGHT_MODE : HIYUI_ICON_DARK_MODE)
+      .tooltip(label).accessibilityName(label);
 }
 
 void DesignerApp::refreshColors() {
@@ -422,7 +438,6 @@ void DesignerApp::refreshColors() {
       if (button) button->bg(p[surface_->tool() == type ? C::ToolSelected : C::Panel]);
     surface_->refresh();
   }
-  if (themeButton_) themeButton_->text(appearance_.dark() ? "浅色" : "深色");
 }
 
 void DesignerApp::responsive() {
@@ -468,7 +483,7 @@ void DesignerApp::showXml(bool value) {
   canvasHost_->hidden(value);
   xml_->hidden(!value);
   refreshColors();
-  if (value) xml_->text(layoutXml(document_.state));
+  if (value) xml_->text(windowXml(document_.state));
 }
 
 void DesignerApp::refresh(bool properties) {
@@ -484,7 +499,7 @@ void DesignerApp::refresh(bool properties) {
       .enabled(document_.state.device >= 2);
   undoButton_->enabled(document_.canUndo());
   redoButton_->enabled(document_.canRedo());
-  if (showXml_) xml_->text(layoutXml(document_.state));
+  if (showXml_) xml_->text(windowXml(document_.state));
   refreshTree();
   if (properties) selectionChanged();
   else {
@@ -719,13 +734,13 @@ void DesignerApp::save(bool saveAs, std::function<void()> after) {
   });
 }
 
-void DesignerApp::exportLayout() {
+void DesignerApp::exportLayout(bool withWindow) {
   if (!commitEdits()) return;
   fileDialog_ = true;
-  const FileFilter filter{"HIY-UI 布局 XML", "*.xml"};
-  FileDialog::open(root_, {.mode = FileDialogMode::SaveFile, .title = "导出布局 XML",
-      .defaultFilename = "layout.xml", .filters = &filter, .filterCount = 1},
-      [this](const FileDialogResult &result) {
+  const FileFilter filter{withWindow ? "HIY-UI 窗口 XML" : "HIY-UI 布局 XML", "*.xml"};
+  FileDialog::open(root_, {.mode = FileDialogMode::SaveFile, .title = withWindow ? "导出窗口 XML" : "导出布局 XML",
+      .defaultFilename = withWindow ? "window.xml" : "layout.xml", .filters = &filter, .filterCount = 1},
+      [this, withWindow](const FileDialogResult &result) {
     fileDialog_ = false;
     if (result.status == FileDialogStatus::Cancelled) return;
     if (result.status != FileDialogStatus::Ok) { log("文件选择器不可用"); return; }
@@ -734,7 +749,7 @@ void DesignerApp::exportLayout() {
     if (path.extension().empty()) path += ".xml";
     auto state = document_.state;
     relocateResources(state, resourceBase(), path.parent_path());
-    const auto xml = layoutXml(state);
+    const auto xml = withWindow ? windowXml(state) : layoutXml(state);
     auto error = catalog_.validate(xml);
     if (!error.empty() || !writeText(path, xml, error)) { log(error); return; }
     log("已导出 " + pathText(path));
@@ -742,33 +757,21 @@ void DesignerApp::exportLayout() {
 }
 
 TitleBarProps DesignerApp::previewTitleBar() const {
-  return {.iconMode = TitleBarIcon::None, .height = 32, .fontSize = 12,
-      .layout = window_->titleBarButtonsLeft() ? TitleBarLayout::Left : TitleBarLayout::Right,
-      .btnSize = 32};
+  return {.layout = window_->titleBarButtonsLeft() ? TitleBarLayout::Left : TitleBarLayout::Right};
 }
 
 void DesignerApp::preview() {
   if (!commitEdits()) return;
   if (previewWindow_) { previewWindow_->close(); previewWindow_ = nullptr; }
-  auto &window = createWindow({.title = document_.state.title.c_str(),
-      .width = document_.state.width, .height = document_.state.height,
-      .borderless = document_.state.device >= 2 && document_.state.borderless,
-      .titleBar = previewTitleBar(),
-      .initiallyHidden = true});
-  Box root;
-  root.init(window).fill();
-  auto layout = XmlLayout::fromString(root, layoutXml(document_.state));
-  if (layout.hasErrors()) {
+  auto layout = XmlWindowLayout::fromString(windowXml(document_.state));
+  if (!layout) {
     for (const auto &diagnostic : layout.diagnostics()) log(diagnostic.message);
-    window.close();
     return;
   }
-  previewWindow_ = &window;
-  window.onCloseRequest([this, preview = &window](WindowCloseEvent &) {
+  previewWindow_ = layout.window();
+  previewWindow_->onCloseRequest([this, preview = previewWindow_](WindowCloseEvent &) {
     if (previewWindow_ == preview) previewWindow_ = nullptr;
   });
-  window.root(std::move(root));
-  window.show();
   log("交互预览已打开；修改窗口大小可查看实际布局响应。");
 }
 

@@ -48,8 +48,8 @@ private:
   DesignDocument &document_;
   const ComponentCatalog &catalog_;
   EditorAppearance &appearance_;
-  hiyui::Ref<hiyui::Box> host_, stage_, extent_, device_, content_;
-  hiyui::Ref<hiyui::VBox> viewport_;
+  hiyui::Ref<hiyui::Box> host_, stage_, extent_, device_;
+  hiyui::Ref<hiyui::VBox> viewport_, content_;
   hiyui::Ref<hiyui::CustomDraw> backdrop_, overlay_, chrome_;
   hiyui::Ref<hiyui::TitleBar> titleBar_;
   std::unique_ptr<hiyui::XmlReloadHost> preview_;
@@ -80,6 +80,11 @@ private:
   bool commitGesture();
   hiyui::Ref<hiyui::Widget> widget(const std::string &id) const;
   hiyui::Point inParent(const std::string &id, hiyui::Point screen) const;
+  hiyui::Point inScreen(const std::string &id, hiyui::Point point) const;
+  hiyui::Point snapOffset(const std::string &id, hiyui::Rect bounds,
+                         bool left, bool right, bool top, bool bottom) const;
+  hiyui::Point snapPoint(const std::string &id, hiyui::Point point) const;
+  hiyui::Rect paletteBounds(const std::string &id, hiyui::Point screen) const;
   hiyui::Rect screenBounds(const std::string &id) const;
   std::string hit(hiyui::Point screen, bool containerOnly = false) const;
   std::string hitNode(const DesignNode &node, hiyui::Point screen, bool containerOnly) const;

@@ -77,8 +77,9 @@ void DesignSurface::init(Widget &parent, const TitleBarProps &titleBar) {
   chrome.init(device).pos(0, 0).ref(chrome_).clickable(false)
       .painter(std::make_unique<FramePainter>(*this));
   device(TitleBar(titleBar).ref(titleBar_));
-  Box content({.bg = 0xf3f4f6});
-  content.init(device).ref(content_).scrollMode(ScrollMode::Off);
+  VBox content;
+  content.init(device).ref(content_).surface(SurfaceRole::Background)
+      .scrollMode(ScrollMode::Off).scrollable(false);
   preview_ = std::make_unique<XmlReloadHost>(content);
   VBox viewport({.bg = HIYUI_TRANSPARENT, .radius = 0, .scroll = ScrollMode::Both});
   viewport.init(stage).fill().ref(viewport_).scrollElastic(false).scrollMomentum(false);
@@ -113,38 +114,53 @@ void DesignSurface::init(Widget &parent, const TitleBarProps &titleBar) {
 void DesignSurface::arrange() {
   if (arranging_ || !host_ || !overlay_) return;
   arranging_ = true;
-  const int width = std::max(1, host_->width() - 20);
-  const int height = std::max(1, host_->height() - 20);
-  stage_->size(width, height);
-  overlay_->size(width, height);
+  float scale = 1;
+  host_.with([&](Box &host) { scale = scaleOf(host); });
+  const auto px = [scale](int value) { return int(std::lround(value * scale)); };
+  const int ruler = px(20), margin = px(14);
+  const int width = std::max(1, host_->widthPx() - ruler);
+  const int height = std::max(1, host_->heightPx() - ruler);
+  const auto offset = viewport_->scrollMetrics();
+  stage_->posPx(ruler, ruler).sizePx(width, height);
+  overlay_->sizePx(width, height);
   const auto &state = document_.state;
   const bool customTitle = state.device >= 2 && state.borderless;
-  const int border = state.device == 0 ? 8 : customTitle ? 0 : 1;
-  const int chromeHeight = devices[state.device].chromeHeight;
-  const int frameWidth = state.width + border * 2;
-  const int frameHeight = state.height + chromeHeight + border;
-  if (fit_)
-    zoom_ = std::clamp(std::min(float(std::max(1, width - 28)) / frameWidth,
-                               float(std::max(1, height - 28)) / frameHeight), 0.1f, 1.0f);
-  device_->size(frameWidth, frameHeight).radius(state.device == 0 ? 40 : state.device == 3 ? 6 : 8).zoom(zoom_);
+  const int border = px(state.device == 0 ? 8 : 1);
+  const int top = state.device == 0 ? 0 : border;
+  const int chromeHeight = px(customTitle ? TitleBarProps{}.height : devices[state.device].chromeHeight);
+  const int clientWidth = px(state.width), clientHeight = px(state.height);
+  const int frameWidth = clientWidth + border * 2;
+  const int frameHeight = top + chromeHeight + clientHeight + border;
+  if (fit_) {
+    const float fit = std::min({float(std::max(1, width - margin * 2)) / frameWidth,
+                               float(std::max(1, height - margin * 2)) / frameHeight, 1.0f});
+    zoom_ = std::max(26.0f, std::floor(fit * 256.0f)) / 256.0f;
+  }
+  device_->sizePx(frameWidth, frameHeight)
+      .radius(customTitle ? 0 : state.device == 0 ? 40 : state.device == 2 ? 8 : 6).zoom(zoom_);
+  device_->bg(customTitle ? HIYUI_TRANSPARENT : state.device == 0 ? 0x161619 : state.device == 1 ? 0x2d2d30 : 0xb8b8b8);
   zoom_ = device_->zoom();
-  chrome_->size(frameWidth, chromeHeight).hidden(customTitle);
-  titleBar_->hidden(!customTitle).width(frameWidth);
+  chrome_->posPx(border, top).sizePx(clientWidth, chromeHeight).hidden(customTitle);
+  titleBar_->hidden(!customTitle).posPx(border, top).sizePx(clientWidth, chromeHeight);
   refreshTitle();
-  content_->pos(border, chromeHeight).size(state.width, state.height);
-  extent_->size(std::max(width, int(std::ceil(frameWidth * zoom_)) + 28),
-                std::max(height, int(std::ceil(frameHeight * zoom_)) + 28));
+  content_->posPx(border, top + chromeHeight).sizePx(clientWidth, clientHeight);
+  const int extentWidth = std::max(width, int(std::ceil(frameWidth * zoom_)) + margin * 2);
+  const int extentHeight = std::max(height, int(std::ceil(frameHeight * zoom_)) + margin * 2);
+  extent_->sizePx(extentWidth, extentHeight);
   host_->updateLayout();
+  viewport_->scrollToXPx(fit_ ? 0 : std::clamp(offset.x, 0, extentWidth - width), false)
+      .scrollToYPx(fit_ ? 0 : std::clamp(offset.y, 0, extentHeight - height), false);
   arranging_ = false;
   scroll();
 }
 
 void DesignSurface::scroll() {
-  if (!viewport_ || !device_) return;
+  if (arranging_ || !viewport_ || !device_) return;
   const auto offset = viewport_->scrollMetrics();
   float scale = 1;
   viewport_.with([&](VBox &view) { scale = scaleOf(view); });
-  device_->posPx(int(std::lround(14 * scale)) - offset.x, int(std::lround(14 * scale)) - offset.y);
+  const int origin = int(std::lround(14 * scale));
+  device_->posPx(origin - offset.x, origin - offset.y);
   refresh();
 }
 
@@ -206,11 +222,92 @@ Point DesignSurface::inParent(const std::string &id, Point screen) const {
   return result;
 }
 
+Point DesignSurface::inScreen(const std::string &id, Point point) const {
+  Point result;
+  widget(id).with([&](Widget &node) {
+    const auto content = node.contentBoundsPx();
+    const auto scroll = node.scrollMetrics();
+    const auto scale = scaleOf(node);
+    result = node.toScreenPx({content.x - scroll.x + int(std::lround(point.x * scale)),
+                              content.y - scroll.y + int(std::lround(point.y * scale))});
+  });
+  return result;
+}
+
+Point DesignSurface::snapOffset(const std::string &id, Rect bounds,
+                                bool left, bool right, bool top, bool bottom) const {
+  Point offset;
+  const auto *owner = document_.find(id);
+  if (!guidesVisible_ || HotkeyManager::ctrlPressed() || !owner || automaticLayout(*owner)) return offset;
+  float scale = 1;
+  content_.with([&](VBox &content) { scale = scaleOf(content); });
+  Point parentOrigin;
+  float parentScale = 1;
+  widget(id).with([&](Widget &parent) {
+    const auto bounds = parent.boundsPx();
+    const auto content = parent.contentBoundsPx();
+    const auto scroll = parent.scrollMetrics();
+    parentOrigin = {bounds.x + content.x - scroll.x, bounds.y + content.y - scroll.y};
+    parentScale = scaleOf(parent);
+  });
+  const auto client = content_->boundsPx();
+  const int tolerance = std::max(1, int(std::lround(6 * scale)));
+  int nearestX = tolerance + 1, nearestY = tolerance + 1;
+  const auto start = inScreen(id, {bounds.x, bounds.y});
+  const auto end = inScreen(id, {bounds.x + bounds.w, bounds.y + bounds.h});
+  Rect viewport;
+  viewport_.with([&](VBox &view) { viewport = transformed(view); });
+  for (const auto &guide : document_.state.guides) {
+    if (guide.position < 0 || guide.position > (guide.vertical ? document_.state.width : document_.state.height)) continue;
+    const int position = int(std::lround(guide.position * scale));
+    const auto point = content_->toScreenPx(guide.vertical ? Point{position, 0} : Point{0, position});
+    const int aligned = int(std::lround((position + (guide.vertical
+        ? client.x - parentOrigin.x : client.y - parentOrigin.y)) / parentScale));
+    if (guide.vertical) {
+      if (point.x < viewport.x || point.x >= viewport.x + viewport.w) continue;
+      if (left && std::abs(start.x - point.x) < nearestX) {
+        nearestX = std::abs(start.x - point.x);
+        offset.x = aligned - bounds.x;
+      }
+      if (right && std::abs(end.x - point.x) < nearestX) {
+        nearestX = std::abs(end.x - point.x);
+        offset.x = aligned - bounds.x - bounds.w;
+      }
+    } else {
+      if (point.y < viewport.y || point.y >= viewport.y + viewport.h) continue;
+      if (top && std::abs(start.y - point.y) < nearestY) {
+        nearestY = std::abs(start.y - point.y);
+        offset.y = aligned - bounds.y;
+      }
+      if (bottom && std::abs(end.y - point.y) < nearestY) {
+        nearestY = std::abs(end.y - point.y);
+        offset.y = aligned - bounds.y - bounds.h;
+      }
+    }
+  }
+  return offset;
+}
+
+Point DesignSurface::snapPoint(const std::string &id, Point point) const {
+  const auto offset = snapOffset(id, {point.x, point.y, 0, 0}, true, false, true, false);
+  return {point.x + offset.x, point.y + offset.y};
+}
+
+Rect DesignSurface::paletteBounds(const std::string &id, Point screen) const {
+  const auto point = inParent(id, screen);
+  const auto *entry = catalog_.find(tool_);
+  Rect bounds{point.x, point.y, entry->width, entry->height};
+  const auto offset = snapOffset(id, bounds, true, true, true, true);
+  bounds.x += offset.x;
+  bounds.y += offset.y;
+  return bounds;
+}
+
 bool DesignSurface::inside(Point screen) const {
   bool result = false;
   if (!content_) return false;
   viewport_.with([&](VBox &view) { result = contains(transformed(view), screen); });
-  content_.with([&](Box &view) { result = result && contains(transformed(view), screen); });
+  content_.with([&](VBox &view) { result = result && contains(transformed(view), screen); });
   return result;
 }
 
@@ -293,14 +390,14 @@ void DesignSurface::clearGuides() {
 int DesignSurface::guidePosition(bool vertical, Point screen) const {
   const auto point = content_->toLocalPx(screen);
   float scale = 1;
-  content_.with([&](Box &content) { scale = scaleOf(content); });
+  content_.with([&](VBox &content) { scale = scaleOf(content); });
   return int(std::lround((vertical ? point.x : point.y) / scale));
 }
 
 int DesignSurface::guideAt(Point screen) const {
   if (!guidesVisible_ || !inside(screen)) return -1;
   float scale = 1;
-  content_.with([&](Box &content) { scale = scaleOf(content); });
+  content_.with([&](VBox &content) { scale = scaleOf(content); });
   const int tolerance = std::max(4, int(std::lround(4 * scale)));
   int found = -1, nearest = tolerance + 1;
   for (size_t i = 0; i < document_.state.guides.size(); ++i) {
@@ -366,10 +463,6 @@ void DesignSurface::finishGuide(Point screen) {
 
 void DesignSurface::begin(Point screen) {
   if (gesture_ != Gesture::None) return;
-  if (tool_.empty()) {
-    const int guide = guideAt(screen);
-    if (guide >= 0) { beginGuide(document_.state.guides[guide].vertical, guide, screen); return; }
-  }
   if (beforeEdit && !beforeEdit()) return;
   overlay_->focus();
   pointer_ = screen;
@@ -384,12 +477,17 @@ void DesignSurface::begin(Point screen) {
     for (int i = 0; i < 8; ++i)
       if (contains({points[i].x - radius, points[i].y - radius, radius * 2, radius * 2}, screen)) handle_ = i;
   }
+  if (tool_.empty() && handle_ < 0 && !HotkeyManager::ctrlPressed()) {
+    const int guide = guideAt(screen);
+    if (guide >= 0) { beginGuide(document_.state.guides[guide].vertical, guide, screen); return; }
+  }
   if (!tool_.empty()) {
     owner_ = hit(screen, true);
     if (owner_.empty()) return;
     gesture_ = Gesture::Create;
     anchor_ = inParent(owner_, screen);
-    draftRect_ = {anchor_.x, anchor_.y, 0, 0};
+    const auto start = snapPoint(owner_, anchor_);
+    draftRect_ = {start.x, start.y, 0, 0};
   } else {
     if (handle_ < 0 && !select(hit(screen))) return;
     auto *node = document_.find(document_.selected);
@@ -421,7 +519,10 @@ void DesignSurface::drag(Point screen) {
   if (!moved_ && std::abs(dx) + std::abs(dy) < 2) return;
   moved_ = true;
   if (gesture_ == Gesture::Create) {
-    draftRect_ = {std::min(anchor_.x, point.x), std::min(anchor_.y, point.y), std::abs(dx), std::abs(dy)};
+    const auto start = snapPoint(owner_, anchor_);
+    const auto end = snapPoint(owner_, point);
+    draftRect_ = {std::min(start.x, end.x), std::min(start.y, end.y),
+                  std::abs(end.x - start.x), std::abs(end.y - start.y)};
     refresh();
     return;
   }
@@ -441,18 +542,30 @@ void DesignSurface::drag(Point screen) {
   const auto previous = document_.state;
   auto rect = startRect_;
   if (gesture_ == Gesture::Move) {
-    node->attributes["x"] = std::to_string(rect.x + dx);
-    node->attributes["y"] = std::to_string(rect.y + dy);
+    rect.x += dx;
+    rect.y += dy;
+    const auto offset = snapOffset(owner_, rect, true, true, true, true);
+    node->attributes["x"] = std::to_string(rect.x + offset.x);
+    node->attributes["y"] = std::to_string(rect.y + offset.y);
     node->attributes.erase("center");
   } else {
-    if (handle_ == 0 || handle_ == 6 || handle_ == 7) { rect.x += dx; rect.w -= dx; }
-    if (handle_ == 2 || handle_ == 3 || handle_ == 4) rect.w += dx;
-    if (handle_ == 0 || handle_ == 1 || handle_ == 2) { rect.y += dy; rect.h -= dy; }
-    if (handle_ == 4 || handle_ == 5 || handle_ == 6) rect.h += dy;
+    const bool left = handle_ == 0 || handle_ == 6 || handle_ == 7;
+    const bool right = handle_ == 2 || handle_ == 3 || handle_ == 4;
+    const bool top = handle_ == 0 || handle_ == 1 || handle_ == 2;
+    const bool bottom = handle_ == 4 || handle_ == 5 || handle_ == 6;
+    if (left) { rect.x += dx; rect.w -= dx; }
+    if (right) rect.w += dx;
+    if (top) { rect.y += dy; rect.h -= dy; }
+    if (bottom) rect.h += dy;
+    const auto offset = snapOffset(owner_, rect, left, right, top, bottom);
+    if (left) { rect.x += offset.x; rect.w -= offset.x; }
+    if (right) rect.w += offset.x;
+    if (top) { rect.y += offset.y; rect.h -= offset.y; }
+    if (bottom) rect.h += offset.y;
     rect.w = std::clamp(rect.w, 8, 3840);
     rect.h = std::clamp(rect.h, 8, 2160);
-    if (handle_ == 0 || handle_ == 6 || handle_ == 7) rect.x = startRect_.x + startRect_.w - rect.w;
-    if (handle_ == 0 || handle_ == 1 || handle_ == 2) rect.y = startRect_.y + startRect_.h - rect.h;
+    if (left) rect.x = startRect_.x + startRect_.w - rect.w;
+    if (top) rect.y = startRect_.y + startRect_.h - rect.h;
     setGeometry(*node, rect, !automaticLayout(*owner));
   }
   if (previous == document_.state) return;
@@ -558,6 +671,7 @@ void DesignSurface::paletteDrag(const std::string &type, Event &event, bool over
     moved_ = moved_ || std::abs(screen.x - paletteStart_.x) + std::abs(screen.y - paletteStart_.y) > 5;
     pointer_ = screen;
     dropTarget_ = overToolbox ? std::string{} : hit(screen, true);
+    if (!dropTarget_.empty()) draftRect_ = paletteBounds(dropTarget_, screen);
     refresh();
   } else if (gesture_ == Gesture::Palette && event.code() == EventCode::Released) {
     gesture_ = Gesture::None;
@@ -565,9 +679,7 @@ void DesignSurface::paletteDrag(const std::string &type, Event &event, bool over
       owner_ = overToolbox ? std::string{} : hit(screen, true);
       if (!owner_.empty()) {
         before_ = document_.state;
-        const auto p = inParent(owner_, screen);
-        const auto *entry = catalog_.find(type);
-        create({p.x, p.y, entry->width, entry->height}, owner_);
+        create(paletteBounds(owner_, screen), owner_);
         commitGesture();
       }
       tool_.clear();
@@ -612,20 +724,18 @@ void DesignSurface::paint(DrawCtx &draw, const PaintCtx &ctx, bool overlay) {
     draw.fillRect({0, 0, ctx.width, ruler}, colors[C::Panel]);
     draw.fillRect({0, 0, ruler, ctx.height}, colors[C::Panel]);
     if (!content_ || !host_) return;
-    const auto screen = content_->toScreenPx({0, 0});
-    const auto origin = host_->toLocalPx(screen);
     const float scale = ctx.dpiScale * zoom_;
     const int step = scale < 0.5f ? 100 : 50;
     draw.pushClip({ruler, 0, ctx.width - ruler, ruler});
     for (int x = 0; x <= document_.state.width; x += step) {
-      const int sx = origin.x + int(std::lround(x * scale));
+      const int sx = host_->toLocalPx(content_->toScreenPx({ctx.px(x), 0})).x;
       draw.drawLine({sx, ruler - ctx.px(6)}, {sx, ruler}, colors[C::RulerTick], 1);
       draw.drawText(std::to_string(x).c_str(), {sx + ctx.px(3), 0, ctx.px(40), ruler - ctx.px(3)}, colors[C::RulerText], ctx.px(9), false);
     }
     draw.popClip();
     draw.pushClip({0, ruler, ruler, ctx.height - ruler});
     for (int y = 0; y <= document_.state.height; y += step) {
-      const int sy = origin.y + int(std::lround(y * scale));
+      const int sy = host_->toLocalPx(content_->toScreenPx({0, ctx.px(y)})).y;
       draw.drawLine({ruler - ctx.px(5), sy}, {ruler, sy}, colors[C::RulerTick], 1);
       draw.drawText(std::to_string(y).c_str(), {0, sy + 2, ruler, ctx.px(12)}, colors[C::RulerText], ctx.px(8));
     }
@@ -646,27 +756,27 @@ void DesignSurface::paint(DrawCtx &draw, const PaintCtx &ctx, bool overlay) {
       if (!contains(frame, {x, y})) draw.fillRect({x, y, ctx.px(1), ctx.px(1)}, colors[C::Dot]);
   if (guidesVisible_) {
     Rect content;
-    content_.with([&](Box &view) { content = localRect(transformed(view)); });
+    content_.with([&](VBox &view) { content = localRect(transformed(view)); });
     draw.pushClip(content);
     for (size_t i = 0; i < document_.state.guides.size(); ++i) {
       const auto &guide = document_.state.guides[i];
-      const int offset = int(std::lround(guide.position * ctx.dpiScale * zoom_));
+      const auto point = overlay_->toLocalPx(content_->toScreenPx(guide.vertical
+          ? Point{ctx.px(guide.position), 0} : Point{0, ctx.px(guide.position)}));
       const uint32_t color = gesture_ == Gesture::Guide && static_cast<int>(i) == guideIndex_ ? 0xffa726 : colors[C::Guide];
-      if (guide.vertical) draw.drawLine({content.x + offset, content.y}, {content.x + offset, content.y + content.h}, color, ctx.px(1));
-      else draw.drawLine({content.x, content.y + offset}, {content.x + content.w, content.y + offset}, color, ctx.px(1));
+      if (guide.vertical) draw.drawLine({point.x, content.y}, {point.x, content.y + content.h}, color, ctx.px(1));
+      else draw.drawLine({content.x, point.y}, {content.x + content.w, point.y}, color, ctx.px(1));
     }
     draw.popClip();
   }
   if (!dropTarget_.empty()) draw.strokeRect(localRect(screenBounds(dropTarget_)), 0x0078d4, ctx.px(2));
-  if (gesture_ == Gesture::Create) {
-    widget(owner_).with([&](Widget &owner) {
-      const auto c = owner.contentBoundsPx();
-      const auto s = owner.scrollMetrics();
-      const auto dpi = scaleOf(owner);
-      const auto a = owner.toScreenPx({c.x - s.x + int(draftRect_.x * dpi), c.y - s.y + int(draftRect_.y * dpi)});
-      draw.strokeRect(localRect({a.x, a.y, int(draftRect_.w * dpi * zoom_), int(draftRect_.h * dpi * zoom_)}), 0x00b4d8, ctx.px(1));
-    });
-    return;
+  if (gesture_ == Gesture::Create || (gesture_ == Gesture::Palette && !dropTarget_.empty())) {
+    const auto &owner = gesture_ == Gesture::Create ? owner_ : dropTarget_;
+    if (gesture_ == Gesture::Create || !automaticLayout(*document_.find(owner))) {
+      const auto start = inScreen(owner, {draftRect_.x, draftRect_.y});
+      const auto end = inScreen(owner, {draftRect_.x + draftRect_.w, draftRect_.y + draftRect_.h});
+      draw.strokeRect(localRect({start.x, start.y, end.x - start.x, end.y - start.y}), 0x00b4d8, ctx.px(1));
+    }
+    if (gesture_ == Gesture::Create) return;
   }
   if (gesture_ == Gesture::Palette && !dropTarget_.empty()) {
     const auto p = overlay_->toLocalPx(pointer_);
