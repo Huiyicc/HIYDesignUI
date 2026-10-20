@@ -71,8 +71,12 @@ void DesignSurface::init(Widget &parent, const TitleBarProps &titleBar) {
   Box stage({.bg = 0x1a1a1c});
   stage.init(host).pos(20, 20).ref(stage_).scrollMode(ScrollMode::Off);
   appearance_.background(stage, EditorColor::Stage);
+  VBox viewport({.bg = HIYUI_TRANSPARENT, .radius = 0, .scroll = ScrollMode::Both});
+  viewport.init(stage).fill().ref(viewport_).scrollElastic(false).scrollMomentum(false);
+  Box extent({.bg = HIYUI_TRANSPARENT});
+  extent.init(viewport).ref(extent_).clickable(false).scrollMode(ScrollMode::Off);
   Box device({.bg = 0x333338, .radius = 8});
-  device.init(stage).pos(14, 14).ref(device_).scrollMode(ScrollMode::Off).clipCorner();
+  device.init(viewport).floating().pos(14, 14).ref(device_).scrollMode(ScrollMode::Off).clipCorner();
   CustomDraw chrome;
   chrome.init(device).pos(0, 0).ref(chrome_).clickable(false)
       .painter(std::make_unique<FramePainter>(*this));
@@ -81,10 +85,6 @@ void DesignSurface::init(Widget &parent, const TitleBarProps &titleBar) {
   content.init(device).ref(content_).surface(SurfaceRole::Background)
       .scrollMode(ScrollMode::Off).scrollable(false);
   preview_ = std::make_unique<XmlReloadHost>(content);
-  VBox viewport({.bg = HIYUI_TRANSPARENT, .radius = 0, .scroll = ScrollMode::Both});
-  viewport.init(stage).fill().ref(viewport_).scrollElastic(false).scrollMomentum(false);
-  Box extent({.bg = HIYUI_TRANSPARENT});
-  extent.init(viewport).ref(extent_).clickable(false).scrollMode(ScrollMode::Off);
   CustomDraw overlay;
   overlay.init(viewport).ref(overlay_).floating().clickable().pressLock().addToGroup()
       .scrollOnFocus(false).scrollChain().painter(std::make_unique<CanvasPainter>(*this, true));
@@ -183,6 +183,7 @@ bool DesignSurface::reload(std::string &error) {
   auto root = widget(document_.state.root.id);
   const auto redirect = [overlay = overlay_](auto &&self, Widget &node) -> void {
     node.on(EventCode::Focused, [overlay] { if (overlay) overlay->focus(); });
+    node.on(EventCode::Scroll, [overlay] { if (overlay) overlay->redraw(); });
     for (int i = 0; i < node.childCount(); ++i)
       node.childAt(i).with([&](Widget &child) { self(self, child); });
   };
