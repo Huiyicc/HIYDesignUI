@@ -51,27 +51,32 @@ public:
   void paint(DrawCtx &draw, const PaintCtx &ctx) override { surface_.paintFrame(draw, ctx); }
 };
 
-DesignSurface::DesignSurface(DesignDocument &document, const ComponentCatalog &catalog)
-    : document_(document), catalog_(catalog) {}
+DesignSurface::DesignSurface(DesignDocument &document, const ComponentCatalog &catalog, EditorAppearance &appearance)
+    : document_(document), catalog_(catalog), appearance_(appearance) {}
 
 DesignSurface::~DesignSurface() {
   preview_.reset();
   host_.destroy();
 }
 
-void DesignSurface::init(Widget &parent) {
+void DesignSurface::init(Widget &parent, const TitleBarProps &titleBar) {
   Box host({.bg = 0x1e1e1e});
   host.init(parent).fill().ref(host_).scrollMode(ScrollMode::Off);
+  appearance_.background(host, EditorColor::Background);
   CustomDraw backdrop;
-  backdrop.init(host).fill().clickable(false).ref(backdrop_)
+  backdrop.init(host).fill().clickable().pressLock().ref(backdrop_)
       .painter(std::make_unique<CanvasPainter>(*this, false));
+  for (const auto code : {EventCode::Pressed, EventCode::Pressing, EventCode::Released, EventCode::PressLost})
+    backdrop.on(code, [this](Event &event) { rulerEvent(event); });
   Box stage({.bg = 0x1a1a1c});
   stage.init(host).pos(20, 20).ref(stage_).scrollMode(ScrollMode::Off);
+  appearance_.background(stage, EditorColor::Stage);
   Box device({.bg = 0x333338, .radius = 8});
   device.init(stage).pos(14, 14).ref(device_).scrollMode(ScrollMode::Off).clipCorner();
   CustomDraw chrome;
   chrome.init(device).pos(0, 0).ref(chrome_).clickable(false)
       .painter(std::make_unique<FramePainter>(*this));
+  device(TitleBar(titleBar).ref(titleBar_));
   Box content({.bg = 0xf3f4f6});
   content.init(device).ref(content_).scrollMode(ScrollMode::Off);
   preview_ = std::make_unique<XmlReloadHost>(content);
@@ -113,16 +118,19 @@ void DesignSurface::arrange() {
   stage_->size(width, height);
   overlay_->size(width, height);
   const auto &state = document_.state;
-  const int border = state.device == 0 ? 8 : 1;
+  const bool customTitle = state.device >= 2 && state.borderless;
+  const int border = state.device == 0 ? 8 : customTitle ? 0 : 1;
   const int chromeHeight = devices[state.device].chromeHeight;
   const int frameWidth = state.width + border * 2;
   const int frameHeight = state.height + chromeHeight + border;
   if (fit_)
     zoom_ = std::clamp(std::min(float(std::max(1, width - 28)) / frameWidth,
                                float(std::max(1, height - 28)) / frameHeight), 0.1f, 1.0f);
-  device_->size(frameWidth, frameHeight).radius(state.device == 0 ? 40 : 10).zoom(zoom_);
+  device_->size(frameWidth, frameHeight).radius(state.device == 0 ? 40 : state.device == 3 ? 6 : 8).zoom(zoom_);
   zoom_ = device_->zoom();
-  chrome_->size(frameWidth, chromeHeight);
+  chrome_->size(frameWidth, chromeHeight).hidden(customTitle);
+  titleBar_->hidden(!customTitle).width(frameWidth);
+  refreshTitle();
   content_->pos(border, chromeHeight).size(state.width, state.height);
   extent_->size(std::max(width, int(std::ceil(frameWidth * zoom_)) + 28),
                 std::max(height, int(std::ceil(frameHeight * zoom_)) + 28));
@@ -248,6 +256,11 @@ void DesignSurface::refresh() {
   if (chrome_) chrome_->redraw();
 }
 
+void DesignSurface::refreshTitle() {
+  if (titleBar_) titleBar_->title(document_.state.title.c_str());
+  if (chrome_) chrome_->redraw();
+}
+
 void DesignSurface::pointerEvent(Event &event) {
   Point screen;
   if (event.code() == EventCode::PressLost) { cancel(); return; }
@@ -260,8 +273,103 @@ void DesignSurface::pointerEvent(Event &event) {
   }
 }
 
+void DesignSurface::toggleGuides() {
+  cancel();
+  guidesVisible_ = !guidesVisible_;
+  refresh();
+  if (onStatus) onStatus(guidesVisible_ ? "辅助线已显示" : "辅助线已隐藏");
+}
+
+void DesignSurface::clearGuides() {
+  if (beforeEdit && !beforeEdit()) return;
+  cancel();
+  if (document_.state.guides.empty()) return;
+  document_.state.guides.clear();
+  document_.checkpoint();
+  refresh();
+  if (onChange) onChange();
+}
+
+int DesignSurface::guidePosition(bool vertical, Point screen) const {
+  const auto point = content_->toLocalPx(screen);
+  float scale = 1;
+  content_.with([&](Box &content) { scale = scaleOf(content); });
+  return int(std::lround((vertical ? point.x : point.y) / scale));
+}
+
+int DesignSurface::guideAt(Point screen) const {
+  if (!guidesVisible_ || !inside(screen)) return -1;
+  float scale = 1;
+  content_.with([&](Box &content) { scale = scaleOf(content); });
+  const int tolerance = std::max(4, int(std::lround(4 * scale)));
+  int found = -1, nearest = tolerance + 1;
+  for (size_t i = 0; i < document_.state.guides.size(); ++i) {
+    const auto &guide = document_.state.guides[i];
+    if (guide.position > (guide.vertical ? document_.state.width : document_.state.height)) continue;
+    const auto point = content_->toScreenPx(guide.vertical
+        ? Point{int(std::lround(guide.position * scale)), 0}
+        : Point{0, int(std::lround(guide.position * scale))});
+    const int distance = std::abs(guide.vertical ? screen.x - point.x : screen.y - point.y);
+    if (distance < nearest) { nearest = distance; found = static_cast<int>(i); }
+  }
+  return found;
+}
+
+void DesignSurface::beginGuide(bool vertical, int index, Point screen) {
+  if (gesture_ != Gesture::None || (beforeEdit && !beforeEdit())) return;
+  if (index < 0 && document_.state.guides.size() >= 256) {
+    if (onStatus) onStatus("最多支持 256 条辅助线");
+    return;
+  }
+  overlay_->focus();
+  before_ = document_.state;
+  guideIndex_ = index;
+  if (guideIndex_ < 0) {
+    guideIndex_ = static_cast<int>(document_.state.guides.size());
+    document_.state.guides.push_back({vertical, guidePosition(vertical, screen)});
+  }
+  guidesVisible_ = true;
+  gesture_ = Gesture::Guide;
+  viewport_->scrollMode(ScrollMode::Off);
+  pointer_ = screen;
+  refresh();
+}
+
+void DesignSurface::rulerEvent(Event &event) {
+  if (gesture_ == Gesture::Guide) { pointerEvent(event); return; }
+  if (event.code() != EventCode::Pressed) return;
+  Point screen;
+  if (!screenPointer(event, screen)) return;
+  const auto point = host_->toLocalPx(screen);
+  float scale = 1;
+  host_.with([&](Box &host) { scale = scaleOf(host); });
+  const int ruler = int(std::lround(20 * scale));
+  if (point.x < ruler && point.y >= ruler) beginGuide(true, -1, screen);
+  else if (point.y < ruler && point.x >= ruler) beginGuide(false, -1, screen);
+}
+
+void DesignSurface::finishGuide(Point screen) {
+  drag(screen);
+  const auto guide = document_.state.guides[guideIndex_];
+  if (!inside(screen) || guide.position < 0 ||
+      guide.position > (guide.vertical ? document_.state.width : document_.state.height))
+    document_.state.guides.erase(document_.state.guides.begin() + guideIndex_);
+  const bool changed = before_ && *before_ != document_.state;
+  before_.reset();
+  gesture_ = Gesture::None;
+  guideIndex_ = -1;
+  viewport_->scrollMode(ScrollMode::Both);
+  if (changed) document_.checkpoint();
+  refresh();
+  if (changed && onChange) onChange();
+}
+
 void DesignSurface::begin(Point screen) {
   if (gesture_ != Gesture::None) return;
+  if (tool_.empty()) {
+    const int guide = guideAt(screen);
+    if (guide >= 0) { beginGuide(document_.state.guides[guide].vertical, guide, screen); return; }
+  }
   if (beforeEdit && !beforeEdit()) return;
   overlay_->focus();
   pointer_ = screen;
@@ -300,6 +408,14 @@ void DesignSurface::begin(Point screen) {
 void DesignSurface::drag(Point screen) {
   pointer_ = screen;
   if (gesture_ == Gesture::None || gesture_ == Gesture::Palette) return;
+  if (gesture_ == Gesture::Guide) {
+    auto &guide = document_.state.guides[guideIndex_];
+    guide.position = guidePosition(guide.vertical, screen);
+    if (onStatus) onStatus(std::string(guide.vertical ? "辅助线 X " : "辅助线 Y ") +
+                           std::to_string(guide.position) + " · 拖回标尺删除");
+    refresh();
+    return;
+  }
   const auto point = inParent(owner_, screen);
   const int dx = point.x - anchor_.x, dy = point.y - anchor_.y;
   if (!moved_ && std::abs(dx) + std::abs(dy) < 2) return;
@@ -349,6 +465,7 @@ void DesignSurface::drag(Point screen) {
 
 void DesignSurface::finish(Point screen) {
   if (gesture_ == Gesture::None || gesture_ == Gesture::Palette) return;
+  if (gesture_ == Gesture::Guide) { finishGuide(screen); return; }
   drag(screen);
   if (gesture_ == Gesture::Create && moved_ && inside(screen)) {
     create(draftRect_, owner_);
@@ -410,10 +527,11 @@ void DesignSurface::cancel() {
   if (changed) {
     document_.state = *before_;
     std::string error;
-    reload(error);
+    if (gesture_ != Gesture::Guide) reload(error);
   }
   before_.reset();
   gesture_ = Gesture::None;
+  guideIndex_ = -1;
   if (!tool_.empty()) {
     tool_.clear();
     if (onToolChanged) onToolChanged();
@@ -487,10 +605,12 @@ void DesignSurface::nudge(int dx, int dy) {
 }
 
 void DesignSurface::paint(DrawCtx &draw, const PaintCtx &ctx, bool overlay) {
+  const auto &colors = appearance_.palette();
+  using C = EditorColor;
   const int ruler = ctx.px(20);
   if (!overlay) {
-    draw.fillRect({0, 0, ctx.width, ruler}, 0x252526);
-    draw.fillRect({0, 0, ruler, ctx.height}, 0x252526);
+    draw.fillRect({0, 0, ctx.width, ruler}, colors[C::Panel]);
+    draw.fillRect({0, 0, ruler, ctx.height}, colors[C::Panel]);
     if (!content_ || !host_) return;
     const auto screen = content_->toScreenPx({0, 0});
     const auto origin = host_->toLocalPx(screen);
@@ -499,15 +619,15 @@ void DesignSurface::paint(DrawCtx &draw, const PaintCtx &ctx, bool overlay) {
     draw.pushClip({ruler, 0, ctx.width - ruler, ruler});
     for (int x = 0; x <= document_.state.width; x += step) {
       const int sx = origin.x + int(std::lround(x * scale));
-      draw.drawLine({sx, ruler - ctx.px(6)}, {sx, ruler}, 0x626268, 1);
-      draw.drawText(std::to_string(x).c_str(), {sx + ctx.px(3), 0, ctx.px(40), ruler - ctx.px(3)}, 0x929299, ctx.px(9), false);
+      draw.drawLine({sx, ruler - ctx.px(6)}, {sx, ruler}, colors[C::RulerTick], 1);
+      draw.drawText(std::to_string(x).c_str(), {sx + ctx.px(3), 0, ctx.px(40), ruler - ctx.px(3)}, colors[C::RulerText], ctx.px(9), false);
     }
     draw.popClip();
     draw.pushClip({0, ruler, ruler, ctx.height - ruler});
     for (int y = 0; y <= document_.state.height; y += step) {
       const int sy = origin.y + int(std::lround(y * scale));
-      draw.drawLine({ruler - ctx.px(5), sy}, {ruler, sy}, 0x626268, 1);
-      draw.drawText(std::to_string(y).c_str(), {0, sy + 2, ruler, ctx.px(12)}, 0x929299, ctx.px(8));
+      draw.drawLine({ruler - ctx.px(5), sy}, {ruler, sy}, colors[C::RulerTick], 1);
+      draw.drawText(std::to_string(y).c_str(), {0, sy + 2, ruler, ctx.px(12)}, colors[C::RulerText], ctx.px(8));
     }
     draw.popClip();
     return;
@@ -523,7 +643,20 @@ void DesignSurface::paint(DrawCtx &draw, const PaintCtx &ctx, bool overlay) {
   const int dotSpacing = std::max(1, ctx.px(18));
   for (int y = ctx.px(8); y < ctx.height; y += dotSpacing)
     for (int x = ctx.px(8); x < ctx.width; x += dotSpacing)
-      if (!contains(frame, {x, y})) draw.fillRect({x, y, ctx.px(1), ctx.px(1)}, 0x303034);
+      if (!contains(frame, {x, y})) draw.fillRect({x, y, ctx.px(1), ctx.px(1)}, colors[C::Dot]);
+  if (guidesVisible_) {
+    Rect content;
+    content_.with([&](Box &view) { content = localRect(transformed(view)); });
+    draw.pushClip(content);
+    for (size_t i = 0; i < document_.state.guides.size(); ++i) {
+      const auto &guide = document_.state.guides[i];
+      const int offset = int(std::lround(guide.position * ctx.dpiScale * zoom_));
+      const uint32_t color = gesture_ == Gesture::Guide && static_cast<int>(i) == guideIndex_ ? 0xffa726 : colors[C::Guide];
+      if (guide.vertical) draw.drawLine({content.x + offset, content.y}, {content.x + offset, content.y + content.h}, color, ctx.px(1));
+      else draw.drawLine({content.x, content.y + offset}, {content.x + content.w, content.y + offset}, color, ctx.px(1));
+    }
+    draw.popClip();
+  }
   if (!dropTarget_.empty()) draw.strokeRect(localRect(screenBounds(dropTarget_)), 0x0078d4, ctx.px(2));
   if (gesture_ == Gesture::Create) {
     widget(owner_).with([&](Widget &owner) {
@@ -545,13 +678,13 @@ void DesignSurface::paint(DrawCtx &draw, const PaintCtx &ctx, bool overlay) {
   if (!node || !ref || !ref->isVisible()) return;
   const auto rect = localRect(screenBounds(node->id));
   if (rect.w <= 0 || rect.h <= 0) return;
-  const uint32_t color = node->locked ? 0x9d9d9d : 0x00b4d8;
+  const uint32_t color = colors[node->locked ? C::Muted : C::Guide];
   draw.strokeRect(rect, color, ctx.px(1));
   if (document_.parent(node->id) && !node->locked) {
     const int half = ctx.px(3);
     for (const auto p : handles(rect)) {
       Rect handle{p.x - half, p.y - half, half * 2 + 1, half * 2 + 1};
-      draw.fillRect(handle, 0x252526);
+      draw.fillRect(handle, colors[C::Panel]);
       draw.strokeRect(handle, color, ctx.px(1));
     }
   }
@@ -570,17 +703,19 @@ void DesignSurface::paint(DrawCtx &draw, const PaintCtx &ctx, bool overlay) {
       const auto p = overlay_->toLocalPx(value.toScreenPx({c.x - s.x, c.y - s.y}));
       parent.x = p.x; parent.y = p.y;
     });
-    draw.drawLine({parent.x, rect.y + rect.h / 2}, {rect.x, rect.y + rect.h / 2}, 0x6296b5, 1);
-    draw.drawLine({rect.x + rect.w / 2, parent.y}, {rect.x + rect.w / 2, rect.y}, 0x6296b5, 1);
+    draw.drawLine({parent.x, rect.y + rect.h / 2}, {rect.x, rect.y + rect.h / 2}, colors[C::PositionLine], 1);
+    draw.drawLine({rect.x + rect.w / 2, parent.y}, {rect.x + rect.w / 2, rect.y}, colors[C::PositionLine], 1);
     const std::string position = "X " + std::to_string(bounds.x) + "   Y " + std::to_string(bounds.y);
-    draw.drawText(position.c_str(), {rect.x, rect.y + rect.h + ctx.px(7), ctx.px(160), ctx.px(18)}, 0x8bc9df, ctx.px(10), false);
+    draw.drawText(position.c_str(), {rect.x, rect.y + rect.h + ctx.px(7), ctx.px(160), ctx.px(18)}, colors[C::PositionText], ctx.px(10), false);
   }
 }
 
 void DesignSurface::paintFrame(DrawCtx &draw, const PaintCtx &ctx) {
   const int mode = document_.state.device;
   const auto width = ctx.width, height = ctx.height;
-  draw.fillRect({0, 0, width, height}, mode == 0 ? 0x161619 : 0x2d2d30);
+  const uint32_t frameBg = mode == 0 ? 0x161619 : mode == 1 ? 0x2d2d30 : mode == 4 ? 0xe6e6e6 : 0xf3f3f3;
+  const uint32_t text = mode <= 1 ? 0xcccccc : 0x242424;
+  draw.fillRect({0, 0, width, height}, frameBg);
   if (mode == 0) {
     draw.drawText("9:41", {ctx.px(18), 0, ctx.px(50), height}, 0xffffff, ctx.px(11));
     draw.fillRoundRect({width / 2 - ctx.px(38), ctx.px(6), ctx.px(76), ctx.px(18)}, 0x080808, ctx.px(9));
@@ -595,8 +730,20 @@ void DesignSurface::paintFrame(DrawCtx &draw, const PaintCtx &ctx) {
       draw.fillRoundRect(address, 0x3c3c40, ctx.px(5));
       draw.drawText("localhost / " "preview", address, 0xaaaaaf, ctx.px(11));
     } else {
-      draw.drawText(document_.state.title.c_str(), {ctx.px(70), 0, std::max(1, width - ctx.px(180)), height}, 0xcccccc, ctx.px(12), mode == 4);
-      if (mode != 4) draw.drawText("−     □     ×", {width - ctx.px(105), 0, ctx.px(100), height}, 0xcccccc, ctx.px(12));
+      const int left = ctx.px(mode == 4 ? 78 : 12);
+      const int buttons = ctx.px(mode == 4 ? 78 : 138);
+      draw.drawText(document_.state.title.c_str(), {left, 0, std::max(1, width - left - buttons), height}, text, ctx.px(12), mode == 4);
+      if (mode != 4) {
+        const int buttonWidth = ctx.px(46), half = ctx.px(5), cy = height / 2;
+        const int closeX = width - buttonWidth / 2;
+        const int maxX = closeX - buttonWidth;
+        const int minX = maxX - buttonWidth;
+        if (mode == 3) draw.fillCircle({closeX, cy}, ctx.px(10), 0xe1e1e1);
+        draw.drawLine({minX - half, cy + half / 2}, {minX + half, cy + half / 2}, text, ctx.px(1));
+        draw.strokeRect({maxX - half, cy - half, half * 2, half * 2}, text, ctx.px(1));
+        draw.drawLine({closeX - half, cy - half}, {closeX + half, cy + half}, text, ctx.px(1));
+        draw.drawLine({closeX - half, cy + half}, {closeX + half, cy - half}, text, ctx.px(1));
+      }
     }
   }
 }

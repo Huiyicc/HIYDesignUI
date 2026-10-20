@@ -41,14 +41,23 @@ void PropertyInspector::init(Widget &parent) {
                      .hoverBg = 0x37373d, .pressedBg = 0x04395e,
                      .borderColor = 0x3f3f46, .secondaryTextColor = 0x9d9d9d});
   grid.init(parent).fill().ref(grid_).radius(0);
+  appearance_.bind(grid, [grid = grid_](Widget &, const EditorPalette &p) {
+    using C = EditorColor;
+    grid->palette({.bg = p[C::Panel], .textColor = p[C::Text], .headerBg = p[C::Raised],
+        .groupBg = p[C::Raised], .selectedBg = p[C::Selected], .hoverBg = p[C::Hover],
+        .pressedBg = p[C::Selected], .borderColor = p[C::Border], .secondaryTextColor = p[C::Muted]});
+    grid->radius(0);
+  });
   grid.registerEditor("darkText", [this](Widget &host, PropertyEditor editor) {
     Input input({.bg = 0x1e1e1e, .textColor = 0xcccccc, .fontSize = 12, .radius = 0});
     input.init(host).fill().text(editor.text()).ref(textInput_);
+    input.padding(6, 3);
+    appearance_.input(input);
     input.onChange([editor](const std::string &text) { editor.setText(text); });
     input.on(EventCode::Ready, [editor] { editor.commit(); });
     editor.focusTarget(input);
   });
-  grid.registerEditor("darkChoice", [](Widget &host, PropertyEditor editor) {
+  grid.registerEditor("darkChoice", [this](Widget &host, PropertyEditor editor) {
     const auto property = editor.property();
     if (!property) return;
     std::vector<DropdownItem> items;
@@ -62,21 +71,28 @@ void PropertyInspector::init(Widget &parent) {
     Dropdown input({.selectedIndex = selected, .bg = 0x2d2d30, .textColor = 0xcccccc,
                     .fontSize = 12, .radius = 0, .popupMode = PopupMode::Inline});
     input.init(host).fill().items(items).selectedIndex(selected);
-    input.part(DropdownPart::Popup, Part({.normal = {.bg = 0x252526, .textColor = 0xcccccc, .borderColor = 0x3f3f46, .fontSize = 12}}));
-    input.part(DropdownPart::Item, Part({.normal = {.bg = 0x252526, .textColor = 0xcccccc, .fontSize = 12},
-        .hovered = {.bg = 0x37373d}, .focused = {.bg = 0x37373d},
-        .checked = {.bg = 0x04395e}, .pressed = {.bg = 0x04395e}}));
+    Ref<Dropdown> choice;
+    input.ref(choice);
+    appearance_.bind(input, [choice](Widget &, const EditorPalette &p) {
+      using C = EditorColor;
+      choice->bg(p[C::Raised]).textColor(p[C::Text]);
+      choice->part(DropdownPart::Popup, Part({.normal = {.bg = p[C::Panel], .textColor = p[C::Text], .borderColor = p[C::Border], .fontSize = 12}}));
+      choice->part(DropdownPart::Item, Part({.normal = {.bg = p[C::Panel], .textColor = p[C::Text], .fontSize = 12},
+          .hovered = {.bg = p[C::Hover]}, .focused = {.bg = p[C::Hover]},
+          .checked = {.bg = p[C::Selected]}, .pressed = {.bg = p[C::Selected]}}));
+    });
     input.onChange([editor, values = std::move(values)](int index) {
       if (index >= 0 && index < static_cast<int>(values.size()) && editor.setValue(values[index])) editor.commit();
     });
     editor.focusTarget(input);
   });
-  grid.registerEditor("darkBool", [](Widget &host, PropertyEditor editor) {
+  grid.registerEditor("darkBool", [this](Widget &host, PropertyEditor editor) {
     const auto value = editor.value();
     const auto *checked = value.get<bool>();
     Checkbox input({.checked = checked && *checked, .checkedColor = 0x0078d4,
                     .textColor = 0xcccccc, .fontSize = 12});
     input.init(host).fillWidth();
+    appearance_.foreground(input, EditorColor::Text);
     input.onChange([editor](bool checked) { if (editor.setValue(checked)) editor.commit(); });
     editor.focusTarget(input);
   });

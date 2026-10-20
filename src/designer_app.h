@@ -2,6 +2,7 @@
 
 #include "design_surface.h"
 #include "property_inspector.h"
+#include "editor_palette.h"
 #include <hiyui/hiyui.h>
 #include <array>
 #include <deque>
@@ -20,6 +21,14 @@ private:
   void buildPalette(hiyui::Widget &parent);
   void buildWorkspace(hiyui::Widget &parent);
   void buildInspector(hiyui::Widget &parent);
+  hiyui::Button actionButton(hiyui::Widget &parent, const char *text, uint32_t icon,
+                            std::function<void()> action = {});
+  hiyui::Label caption(hiyui::Widget &parent, const char *text,
+                       EditorColor role = EditorColor::Text, int size = 12);
+  hiyui::HBox strip(hiyui::Widget &parent, int height, EditorColor role = EditorColor::Panel);
+  uint32_t color(EditorColor role) const { return appearance_.color(role); }
+  void refreshColors();
+  void toggleTheme();
   void responsive();
   void refresh(bool properties = true);
   void selectionChanged(bool preserveEditor = false);
@@ -29,6 +38,7 @@ private:
   bool apply(DocumentState value, std::string selected, std::string &error, bool properties = true);
   void changeDevice(int index);
   void changeResolution();
+  void changeFrame();
   void undo(bool redo = false);
   void erase();
   void copy();
@@ -39,6 +49,7 @@ private:
   void save(bool saveAs = false, std::function<void()> after = {});
   void exportLayout();
   void preview();
+  hiyui::TitleBarProps previewTitleBar() const;
   void confirmDiscard(std::function<void()> action);
   void completeConfirmation(bool saveFirst);
   void cancelConfirmation();
@@ -49,6 +60,8 @@ private:
   std::filesystem::path resourceBase() const;
 
   DesignDocument document_;
+  EditorAppearance appearance_;
+  hiyui::ScopedEventHandle rootDelete_;
   ComponentCatalog catalog_;
   std::unique_ptr<DesignSurface> surface_;
   std::unique_ptr<PropertyInspector> inspector_;
@@ -61,6 +74,8 @@ private:
   hiyui::Ref<hiyui::Input> xml_, output_, width_, height_, projectTitle_;
   hiyui::Ref<hiyui::Label> status_, position_, selectionLabel_, documentTab_, zoomLabel_;
   hiyui::Ref<hiyui::Button> undoButton_, redoButton_, designTab_, xmlTab_, propsTab_, treeTab_;
+  hiyui::Ref<hiyui::Button> frameButton_;
+  hiyui::Ref<hiyui::Button> themeButton_;
   std::array<hiyui::Ref<hiyui::Button>, 5> deviceButtons_;
   std::vector<std::pair<std::string, hiyui::Ref<hiyui::Button>>> paletteButtons_;
   std::map<hiyui::TreeNodeId, std::string> treeIds_;
@@ -76,6 +91,7 @@ private:
   bool compact_ = false;
   bool inspectorQueued_ = false;
   bool arranging_ = false;
+  bool themeAnimation_ = true;
 };
 
 }

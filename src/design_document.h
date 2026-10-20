@@ -37,6 +37,12 @@ inline constexpr DevicePreset devices[] = {
     {"macos", "macOS", 1440, 900, 32},
 };
 
+struct Guide {
+  bool vertical = false;
+  int position = 0;
+  bool operator==(const Guide &) const = default;
+};
+
 struct DocumentState {
   DesignNode root;
   std::string title = "用户登录";
@@ -44,6 +50,8 @@ struct DocumentState {
   int width = 1280;
   int height = 800;
   unsigned nextId = 1;
+  bool borderless = false;
+  std::vector<Guide> guides;
   bool operator==(const DocumentState &) const = default;
 };
 

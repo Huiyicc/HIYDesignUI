@@ -119,6 +119,15 @@ std::string projectXml(const DocumentState &document) {
   project.append_attribute("width") = document.width;
   project.append_attribute("height") = document.height;
   project.append_attribute("nextId") = document.nextId;
+  project.append_attribute("borderless") = document.borderless;
+  if (!document.guides.empty()) {
+    auto guides = project.append_child("Guides");
+    for (const auto &guide : document.guides) {
+      auto item = guides.append_child("Guide");
+      item.append_attribute("axis") = guide.vertical ? "x" : "y";
+      item.append_attribute("position") = guide.position;
+    }
+  }
   writeNode(project, document.root, true);
   return toString(xml);
 }
@@ -139,12 +148,17 @@ bool parseProject(const std::string &text, DocumentState &document, std::string 
   for (const auto field : project.attributes()) {
     const std::string_view name = field.name();
     if (name != "version" && name != "title" && name != "device" &&
-        name != "width" && name != "height" && name != "nextId") {
+        name != "width" && name != "height" && name != "nextId" && name != "borderless") {
       error = "不支持的项目属性：" + std::string(name);
       return false;
     }
   }
   DocumentState value;
+  if (const auto field = project.attribute("borderless")) {
+    const std::string_view text = field.value();
+    if (text != "true" && text != "false") { error = "borderless 必须为 true 或 false"; return false; }
+    value.borderless = text == "true";
+  }
   value.title = project.attribute("title").as_string("未命名界面");
   const std::string device = project.attribute("device").as_string();
   bool knownDevice = false;
@@ -158,11 +172,31 @@ bool parseProject(const std::string &text, DocumentState &document, std::string 
     error = "项目视口尺寸或设备配置无效";
     return false;
   }
-  auto root = project.first_child();
-  while (root && root.type() != pugi::node_element) root = root.next_sibling();
+  pugi::xml_node root;
+  bool hasGuides = false;
   int roots = 0;
   for (const auto child : project.children()) {
-    if (child.type() == pugi::node_element) ++roots;
+    if (child.type() == pugi::node_element && std::string_view(child.name()) == "Guides") {
+      if (hasGuides || child.first_attribute()) { error = "辅助线配置无效"; return false; }
+      hasGuides = true;
+      for (const auto item : child.children()) {
+        if (item.type() == pugi::node_comment || item.type() == pugi::node_pi) continue;
+        const std::string_view axis = item.attribute("axis").value();
+        Guide guide;
+        guide.vertical = axis == "x";
+        if (item.type() != pugi::node_element || std::string_view(item.name()) != "Guide" ||
+            item.first_child() || (axis != "x" && axis != "y") ||
+            !uniqueAttributes(item, error) || !readNumber(item.attribute("position"), guide.position) ||
+            guide.position < 0 || guide.position > (guide.vertical ? 3840 : 2160) || value.guides.size() >= 256) {
+          error = "辅助线方向、坐标或数量无效"; return false;
+        }
+        for (const auto field : item.attributes()) {
+          const std::string_view name = field.name();
+          if (name != "axis" && name != "position") { error = "不支持的辅助线属性"; return false; }
+        }
+        value.guides.push_back(guide);
+      }
+    } else if (child.type() == pugi::node_element) { root = child; ++roots; }
     else if (child.type() == pugi::node_pcdata || child.type() == pugi::node_cdata) {
       error = "项目节点不支持文本内容";
       return false;

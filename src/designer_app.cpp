@@ -10,13 +10,13 @@
 namespace hiydesign {
 using namespace hiyui;
 namespace {
-constexpr uint32_t background = 0x1e1e1e;
-constexpr uint32_t panel = 0x252526;
-constexpr uint32_t raised = 0x2d2d30;
-constexpr uint32_t line = 0x3f3f46;
-constexpr uint32_t foreground = 0xcccccc;
-constexpr uint32_t muted = 0x9d9d9d;
-constexpr uint32_t accent = 0x0078d4;
+constexpr auto background = EditorColor::Background;
+constexpr auto panel = EditorColor::Panel;
+constexpr auto raised = EditorColor::Raised;
+constexpr auto line = EditorColor::Border;
+constexpr auto foreground = EditorColor::Text;
+constexpr auto muted = EditorColor::Muted;
+constexpr auto accent = EditorColor::Accent;
 
 uint32_t componentIcon(const std::string &type) {
   static const std::map<std::string, uint32_t> icons = {
@@ -31,33 +31,35 @@ uint32_t componentIcon(const std::string &type) {
   return icons.at(type);
 }
 
-Button actionButton(Widget &parent, const char *text, uint32_t icon,
-                    std::function<void()> action = {}) {
+}
+
+Button DesignerApp::actionButton(Widget &parent, const char *text, uint32_t icon,
+                                 std::function<void()> action) {
   Button button({.text = text, .iconCodepoint = icon, .iconSize = 16,
                  .variant = ButtonVariant::Secondary, .height = 28,
-                 .bg = raised, .textColor = foreground, .fontSize = 12, .radius = 3});
-  button.init(parent).padding(8, 0).borderWidth(0)
-      .style(StyleSet{.hovered = {.color = foreground, .bgFill = {.color = 0x3e3e42}},
-                      .pressed = {.color = foreground, .bgFill = {.color = 0x04395e}},
-                      .focused = {.color = foreground},
-                      .disabled = {.color = muted, .bgFill = {.color = raised}}});
+                 .fontSize = 12, .radius = 3});
+  button.init(parent).padding(8, 0).borderWidth(0);
+  appearance_.button(button);
   if (action) button.onClick(std::move(action));
   return button;
 }
 
-Label caption(Widget &parent, const char *text, uint32_t color = foreground, int size = 12) {
-  Label label({.text = text, .fontSize = size, .textColor = color});
+Label DesignerApp::caption(Widget &parent, const char *text, EditorColor role, int size) {
+  Label label({.text = text, .fontSize = size, .textColor = color(role)});
   label.init(parent);
+  appearance_.foreground(label, role);
   return label;
 }
 
-HBox strip(Widget &parent, int height, uint32_t color = panel) {
-  HBox row({.gap = 4, .bg = color, .radius = 0, .scroll = ScrollMode::Horizontal});
+HBox DesignerApp::strip(Widget &parent, int height, EditorColor role) {
+  HBox row({.gap = 4, .bg = color(role), .radius = 0, .scroll = ScrollMode::Horizontal});
   row.init(parent).fillWidth().height(height).padding(6, 0)
       .scrollbars(ScrollbarMode::Off);
+  appearance_.background(row, role);
   return row;
 }
 
+namespace {
 std::string lower(std::string text) {
   std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) { return char(std::tolower(c)); });
   return text;
@@ -71,31 +73,36 @@ bool supportedTree(const DesignNode &node, const ComponentCatalog &catalog, std:
 }
 
 DesignerApp::~DesignerApp() {
+  appearance_.stop();
+  rootDelete_.off();
   surface_.reset();
   inspector_.reset();
 }
 
 void DesignerApp::setup() {
-  setTheme(Theme::fromSeed(accent));
+  setTheme(Theme::fromSeed(0x0078d4));
   document_.reset(loginDocument(), false);
   document_.selected = "login";
   window_ = &createWindow({.title = "HIYDesignUI", .width = 1440, .height = 900,
-      .borderless = true, .titleBar = {.height = 32, .bg = 0x2d2d30, .textColor = foreground, .fontSize = 12}});
-  Box root({.bg = background});
+      .borderless = true, .titleBar = {.height = 32, .bg = 0x2d2d30, .textColor = color(foreground), .fontSize = 12}});
+  Box root({.bg = color(background)});
   root.init(*window_).fill().ref(root_).scrollMode(ScrollMode::Off);
-  VBox shell({.bg = background, .radius = 0});
+  appearance_.background(root, background);
+  VBox shell({.bg = color(background), .radius = 0});
   shell.init(root).fill().ref(shell_);
+  appearance_.background(shell, background);
   buildMenus(shell);
   buildToolbar(shell);
-  HBox body({.gap = 1, .bg = line, .radius = 0});
+  HBox body({.gap = 1, .bg = color(line), .radius = 0});
   body.init(shell).fillWidth().height(0).flex(1).ref(body_).scrollMode(ScrollMode::Off);
+  appearance_.background(body, line);
   buildPalette(body);
   buildWorkspace(body);
   buildInspector(body);
   auto statusBar = strip(shell, 24, accent);
-  caption(statusBar, "就绪", 0xffffff, 11).ref(status_).width(0).flex(1).textOverflow(TextOverflow::Ellipsis);
-  caption(statusBar, "", 0xffffff, 11).ref(position_);
-  caption(statusBar, "UTF-8  ·  XML", 0xffffff, 11);
+  caption(statusBar, "就绪", EditorColor::White, 11).ref(status_).width(0).flex(1).textOverflow(TextOverflow::Ellipsis);
+  caption(statusBar, "", EditorColor::White, 11).ref(position_);
+  caption(statusBar, "UTF-8  ·  XML", EditorColor::White, 11);
   root.on(EventCode::SizeChanged, [this] { responsive(); });
   root.onDpiChange([this] { responsive(); });
   window_->onCloseRequest([this](WindowCloseEvent &event) {
@@ -108,19 +115,28 @@ void DesignerApp::setup() {
     if (fileDialog_) { status("请先完成文件选择"); return; }
     confirmDiscard([this] { closeApproved_ = true; quit(); });
   });
-  root.on(EventCode::Delete, [this] { window_ = nullptr; });
+  root.on(EventCode::Delete, [this] { appearance_.stop(); window_ = nullptr; }, rootDelete_.out());
+  appearance_.onChange = [this] { refreshColors(); };
   window_->root(std::move(root));
   std::string error;
   if (!surface_->reload(error)) log(error);
   refresh();
+  refreshColors();
   responsive();
   log("项目已加载。拖入组件，或选择组件后在画布内拖出创建区域。");
 }
 
 void DesignerApp::buildMenus(Widget &parent) {
-  MenuBar menu({.height = 28, .bg = panel, .textColor = foreground,
+  MenuBar menu({.height = 28, .bg = color(panel), .textColor = color(foreground),
                 .hoverColor = 0x3e3e42, .activeColor = 0x04395e, .fontSize = 12});
   menu.init(parent).fillWidth();
+  Ref<MenuBar> menuRef;
+  menu.ref(menuRef);
+  appearance_.bind(menu, [menuRef](Widget &, const EditorPalette &p) {
+    menuRef->palette({.bg = p[EditorColor::Panel], .textColor = p[EditorColor::Text],
+        .hoverColor = p[EditorColor::Hover], .activeColor = p[EditorColor::Selected],
+        .activeTextColor = p[EditorColor::Text], .disabledTextColor = p[EditorColor::Muted]});
+  });
   const auto item = [this](const char *text, std::function<void()> action,
                        HotkeySpec key = {}) {
     ContextMenuItem value;
@@ -150,6 +166,14 @@ void DesignerApp::buildMenus(Widget &parent) {
           item("属性面板", [this] { togglePanel(true); }),
           item("适合画布", [this] { surface_->fit(); refresh(false); }),
           item("100%", [this] { surface_->zoom(1); refresh(false); }),
+          item("显示 / 隐藏辅助线", [this] { surface_->toggleGuides(); }),
+          item("清空辅助线", [this] { surface_->clearGuides(); }),
+          item("切换深色 / 浅色主题", [this] { toggleTheme(); }),
+          item("开启 / 关闭主题动画", [this] {
+            themeAnimation_ = !themeAnimation_;
+            if (!themeAnimation_) appearance_.change(appearance_.dark(), false);
+            status(themeAnimation_ ? "主题动画已开启" : "主题动画已关闭");
+          }),
           item("布局 XML", [this] { showXml(!showXml_); })}},
       {.text = "运行", .children = {item("交互预览", [this] { preview(); })}},
       {.text = "帮助", .children = {
@@ -171,41 +195,50 @@ void DesignerApp::buildToolbar(Widget &parent) {
   actionButton(row, nullptr, HIYUI_ICON_DELETE, [this] { erase(); }).tooltip("删除组件");
   caption(row, "│", line);
   actionButton(row, "选择", HIYUI_ICON_NEAR_ME, [this] { surface_->tool({}); });
-  actionButton(row, "预览", HIYUI_ICON_PLAY_ARROW, [this] { preview(); }).textColor(0x73c991);
+  auto previewButton = actionButton(row, "预览", HIYUI_ICON_PLAY_ARROW, [this] { preview(); });
+  appearance_.foreground(previewButton, EditorColor::Success);
   actionButton(row, "导出 XML", 0, [this] { exportLayout(); });
   caption(row, "│", line);
   actionButton(row, "组件", 0, [this] { togglePanel(false); });
   actionButton(row, "属性", 0, [this] { togglePanel(true); });
+  actionButton(row, "浅色", 0, [this] { toggleTheme(); }).ref(themeButton_);
 }
 
 void DesignerApp::buildPalette(Widget &parent) {
-  VBox left({.gap = 0, .bg = panel, .radius = 0});
+  VBox left({.gap = 0, .bg = color(panel), .radius = 0});
   left.init(parent).width(248).fillHeight().ref(left_);
+  appearance_.background(left, panel);
   auto title = strip(left, 34);
   caption(title, "组件箱").flex(1);
   actionButton(title, "×", 0, [this] { togglePanel(false); }).width(24);
-  Input search({.placeholder = "搜索组件…", .height = 28, .bg = background,
-                .textColor = foreground, .placeholderColor = muted, .fontSize = 12, .radius = 3});
-  search.init(left).fillWidth();
+  Input search({.placeholder = "搜索组件…", .height = 28, .bg = color(background),
+                .textColor = color(foreground), .placeholderColor = 0x888888, .fontSize = 12, .radius = 3});
+  search.init(left).fillWidth().padding(6, 3);
+  appearance_.input(search);
   search.onChange([this](const std::string &text) {
     for (const auto &[type, button] : paletteButtons_)
       if (button) button->hidden(lower(type).find(lower(text)) == std::string::npos);
   });
-  VBox list({.padding = 6, .gap = 2, .bg = panel, .radius = 0, .scroll = ScrollMode::Vertical});
+  VBox list({.padding = 6, .gap = 2, .bg = color(panel), .radius = 0, .scroll = ScrollMode::Vertical});
   list.init(left).fillWidth().height(0).flex(1);
+  appearance_.background(list, panel);
   for (const char *category : {"常用组件", "容器与布局"}) {
     caption(list, category, muted, 11).fillWidth().height(24);
-    VBox group({.gap = 0, .bg = panel, .radius = 0});
+    VBox group({.gap = 0, .bg = color(panel), .radius = 0});
     group.init(list).fillWidth();
+    appearance_.background(group, panel);
     for (const auto &entry : catalog_.entries()) {
       if (entry.category != category) continue;
       auto button = actionButton(group, nullptr, 0);
       Ref<Button> ref;
-      button.height(26).fillWidth().bg(panel).ref(ref).pressLock().scrollChain(false);
+      button.height(26).fillWidth().bg(color(panel)).ref(ref).pressLock().scrollChain(false);
       HBox content({.gap = 9, .bg = HIYUI_TRANSPARENT, .radius = 0});
       content.init(button).fill().clickable(false);
       Icon icon({.codepoint = componentIcon(entry.type), .size = 16});
       icon.init(content).size(16, 16).color(0x7fb3e0).clickable(false);
+      Ref<Icon> iconRef;
+      icon.ref(iconRef);
+      appearance_.bind(icon, [iconRef](Widget &, const EditorPalette &p) { iconRef->color(p[EditorColor::Icon]); });
       caption(content, entry.type.c_str()).clickable(false);
       button.tooltip(catalog_.container(entry.type) ? "拖入容器；Box 可自由定位，其他容器自动排列" : "拖入画布，或单击后拖出创建区域");
       paletteButtons_.push_back({entry.type, ref});
@@ -226,85 +259,101 @@ void DesignerApp::buildPalette(Widget &parent) {
 }
 
 void DesignerApp::buildWorkspace(Widget &parent) {
-  VBox center({.bg = background, .radius = 0});
+  VBox center({.bg = color(background), .radius = 0});
   center.init(parent).width(0).flex(1).fillHeight().ref(center_);
+  appearance_.background(center, background);
   auto tabs = strip(center, 32, panel);
-  actionButton(tabs, "设计", 0, [this] { showXml(false); }).ref(designTab_).bg(background);
+  actionButton(tabs, "设计", 0, [this] { showXml(false); }).ref(designTab_).bg(color(background));
   actionButton(tabs, "XML", 0, [this] { showXml(true); }).ref(xmlTab_);
   caption(tabs, "用户登录", muted, 11).ref(documentTab_).width(0).flex(1).textOverflow(TextOverflow::Ellipsis);
-  auto previewBar = strip(center, 38, panel);
+  auto deviceBar = strip(center, 36, panel);
   HBox modes({.padding = 2, .gap = 2, .bg = 0x1b1b1e, .radius = 5});
-  modes.init(previewBar);
+  modes.init(deviceBar);
+  appearance_.background(modes, EditorColor::Inset);
   const uint32_t deviceIcons[] = {HIYUI_ICON_SMARTPHONE, HIYUI_ICON_LANGUAGE,
       HIYUI_ICON_DESKTOP_WINDOWS, HIYUI_ICON_COMPUTER, HIYUI_ICON_LAPTOP_MAC};
   for (int i = 0; i < 5; ++i)
     actionButton(modes, devices[i].name, deviceIcons[i], [this, i] { changeDevice(i); })
         .height(24).fontSize(11).ref(deviceButtons_[i]);
-  caption(previewBar, "│", line);
+  actionButton(deviceBar, "系统边框", 0, [this] { changeFrame(); }).ref(frameButton_)
+      .tooltip("桌面预览切换系统边框与 HIY-UI 自绘标题栏");
+  auto previewBar = strip(center, 34, panel);
+  caption(previewBar, "内容尺寸", muted, 11);
   Input width({.text = "1280", .maxLength = 4, .width = 56, .height = 26,
-                .bg = background, .textColor = foreground, .fontSize = 11, .radius = 3});
-  width.init(previewBar).ref(width_).on(EventCode::Ready, [this] { changeResolution(); });
+                .bg = color(background), .textColor = color(foreground), .fontSize = 11, .radius = 3});
+  width.init(previewBar).padding(6, 3).ref(width_).on(EventCode::Ready, [this] { changeResolution(); });
+  appearance_.input(width);
   caption(previewBar, "×", muted, 11);
   Input height({.text = "800", .maxLength = 4, .width = 56, .height = 26,
-                 .bg = background, .textColor = foreground, .fontSize = 11, .radius = 3});
-  height.init(previewBar).ref(height_).on(EventCode::Ready, [this] { changeResolution(); });
+                 .bg = color(background), .textColor = color(foreground), .fontSize = 11, .radius = 3});
+  height.init(previewBar).padding(6, 3).ref(height_).on(EventCode::Ready, [this] { changeResolution(); });
+  appearance_.input(height);
   actionButton(previewBar, "应用", 0, [this] { changeResolution(); });
   actionButton(previewBar, "−", 0, [this] { surface_->zoom(surface_->zoom() - 0.1f); refresh(false); });
   caption(previewBar, "100%", muted, 11).ref(zoomLabel_).width(42);
   actionButton(previewBar, "+", 0, [this] { surface_->zoom(surface_->zoom() + 0.1f); refresh(false); });
   actionButton(previewBar, "适合", 0, [this] { surface_->fit(); refresh(false); });
-  Box work({.bg = background});
+  Box work({.bg = color(background)});
   work.init(center).fillWidth().height(0).flex(1);
-  Box canvas({.bg = background});
+  appearance_.background(work, background);
+  Box canvas({.bg = color(background)});
   canvas.init(work).fill().ref(canvasHost_);
-  surface_ = std::make_unique<DesignSurface>(document_, catalog_);
-  surface_->init(canvas);
+  appearance_.background(canvas, background);
+  surface_ = std::make_unique<DesignSurface>(document_, catalog_, appearance_);
+  surface_->init(canvas, previewTitleBar());
   surface_->onSelection = [this] { selectionChanged(); };
   surface_->onChange = [this] { refresh(); };
   surface_->onToolChanged = [this] {
     for (const auto &[type, button] : paletteButtons_)
-      if (button) button->bg(surface_->tool() == type ? 0x094771 : panel);
+      if (button) button->bg(color(surface_->tool() == type ? EditorColor::ToolSelected : panel));
   };
   surface_->onStatus = [this](const std::string &text) { status(text); };
   surface_->onDelete = [this] { erase(); };
   surface_->onUndo = [this] { undo(); };
   surface_->onRedo = [this] { undo(true); };
   surface_->beforeEdit = [this] { return !inspector_ || commitEdits(false); };
-  Input xml({.multiline = true, .horizontalScroll = true, .bg = background,
+  Input xml({.multiline = true, .horizontalScroll = true, .bg = color(background),
               .textColor = 0x9cdcfe, .fontSize = 12, .radius = 0, .readOnly = true});
   xml.init(work).fill().hidden().ref(xml_);
-  VBox bottom({.bg = panel, .radius = 0});
+  appearance_.input(xml, EditorColor::Code);
+  VBox bottom({.bg = color(panel), .radius = 0});
   bottom.init(center).fillWidth().height(150).ref(bottom_);
+  appearance_.background(bottom, panel);
   auto outputBar = strip(bottom, 30);
   caption(outputBar, "输出", foreground, 11).flex(1);
   actionButton(outputBar, "清空", 0, [this] { outputText_.clear(); output_->text(""); });
-  Input output({.multiline = true, .bg = background, .textColor = 0x9fb3c8,
+  Input output({.multiline = true, .bg = color(background), .textColor = 0x9fb3c8,
                  .fontSize = 11, .radius = 0, .readOnly = true});
   output.init(bottom).fillWidth().height(0).flex(1).ref(output_);
+  appearance_.input(output, EditorColor::Output);
 }
 
 void DesignerApp::buildInspector(Widget &parent) {
-  VBox right({.bg = panel, .radius = 0});
+  VBox right({.bg = color(panel), .radius = 0});
   right.init(parent).width(286).fillHeight().ref(right_);
+  appearance_.background(right, panel);
   auto tabs = strip(right, 34);
   actionButton(tabs, "属性", 0, [this] {
-    propertyHost_->hidden(false); treeHost_->hidden(); propsTab_->bg(0x04395e); treeTab_->bg(raised);
+    propertyHost_->hidden(false); treeHost_->hidden(); refreshColors();
   }).ref(propsTab_).bg(0x04395e);
   actionButton(tabs, "组件树", 0, [this] {
-    propertyHost_->hidden(); treeHost_->hidden(false); treeTab_->bg(0x04395e); propsTab_->bg(raised);
+    propertyHost_->hidden(); treeHost_->hidden(false); refreshColors();
   }).ref(treeTab_);
   actionButton(tabs, "×", 0, [this] { togglePanel(true); }).width(24);
   Input title({.text = document_.state.title.c_str(), .placeholder = "界面标题", .height = 28,
-                .bg = background, .textColor = foreground, .fontSize = 12, .radius = 3});
-  title.init(right).fillWidth().ref(projectTitle_);
+                .bg = color(background), .textColor = color(foreground), .fontSize = 12, .radius = 3});
+  title.init(right).fillWidth().padding(6, 3).ref(projectTitle_);
+  appearance_.input(title);
   title.on(EventCode::Ready, [this] { commitEdits(false); });
   title.on(EventCode::Defocused, [this] { commitEdits(false); });
   caption(right, "", muted, 11).ref(selectionLabel_).fillWidth().height(30).textOverflow(TextOverflow::Ellipsis);
-  Box host({.bg = panel});
+  Box host({.bg = color(panel)});
   host.init(right).fillWidth().height(0).flex(1);
-  Box property({.bg = panel});
+  appearance_.background(host, panel);
+  Box property({.bg = color(panel)});
   property.init(host).fill().ref(propertyHost_);
-  inspector_ = std::make_unique<PropertyInspector>(document_, catalog_);
+  appearance_.background(property, panel);
+  inspector_ = std::make_unique<PropertyInspector>(document_, catalog_, appearance_);
   inspector_->init(property);
   inspector_->apply = [this](DocumentState state, std::string selected, std::string &error) {
     if (fileDialog_ || confirmShade_) {
@@ -315,12 +364,18 @@ void DesignerApp::buildInspector(Widget &parent) {
     if (result) queueInspector();
     return result;
   };
-  Box treeHost({.bg = panel});
+  Box treeHost({.bg = color(panel)});
   treeHost.init(host).fill().hidden().ref(treeHost_);
+  appearance_.background(treeHost, panel);
   Tree tree({.rowHeight = 28, .indent = 14, .showConnectLine = true,
-             .bg = panel, .textColor = foreground, .selectedBg = 0x04395e,
-             .hoverBg = raised, .connectLineColor = line, .fontSize = 12});
+             .bg = color(panel), .textColor = color(foreground), .selectedBg = 0x04395e,
+             .hoverBg = color(raised), .connectLineColor = color(line), .fontSize = 12});
   tree.init(treeHost).fill().ref(tree_);
+  appearance_.bind(tree, [tree = tree_](Widget &, const EditorPalette &p) {
+    tree->palette({.bg = p[EditorColor::Panel], .textColor = p[EditorColor::Text],
+        .selectedBg = p[EditorColor::Selected], .hoverBg = p[EditorColor::Hover],
+        .connectLineColor = p[EditorColor::Border], .selectedTextColor = p[EditorColor::Text]});
+  });
   tree.onChange([this](const std::vector<TreeNodeId> &ids) {
     if (!ids.empty() && treeIds_.contains(ids.front())) surface_->select(treeIds_[ids.front()]);
   });
@@ -328,6 +383,46 @@ void DesignerApp::buildInspector(Widget &parent) {
   actionButton(actions, "重置属性", 0, [this] { inspector_->resetSelected(); });
   actionButton(actions, "↑", 0, [this] { order(-1); });
   actionButton(actions, "↓", 0, [this] { order(1); });
+}
+
+void DesignerApp::toggleTheme() {
+  if (fileDialog_ || confirmShade_) return;
+  appearance_.change(!appearance_.dark(), themeAnimation_);
+}
+
+void DesignerApp::refreshColors() {
+  if (!root_) return;
+  using C = EditorColor;
+  const auto &p = appearance_.palette();
+  root_.with([&](Box &root) {
+    ContextMenu::palette(root, {.bg = p[C::Panel], .textColor = p[C::Text],
+        .secondaryTextColor = p[C::Muted], .disabledTextColor = p[C::Muted],
+        .hoverBg = p[C::Hover], .pressedBg = p[C::Selected],
+        .borderColor = p[C::Border], .dividerColor = p[C::Border]});
+  });
+  if (window_) window_->titleBarPalette({.bg = p[C::Raised], .textColor = p[C::Text],
+      .iconColor = p[C::Text], .iconHoverColor = p[C::Text], .closeHoverColor = 0xe81123});
+  if (designTab_) designTab_->bg(p[showXml_ ? C::Raised : C::Background]);
+  if (xmlTab_) xmlTab_->bg(p[showXml_ ? C::Background : C::Raised]);
+  if (propertyHost_ && propsTab_ && treeTab_) {
+    const bool properties = !propertyHost_->isHidden();
+    propsTab_->bg(p[properties ? C::Selected : C::Raised]);
+    treeTab_->bg(p[properties ? C::Raised : C::Selected]);
+  }
+  for (int i = 0; i < 5; ++i) if (deviceButtons_[i]) {
+    const bool selected = i == document_.state.device;
+    deviceButtons_[i]->style(StyleSet{
+        .normal = {.color = p[selected ? C::White : C::Text], .bgFill = {.color = p[selected ? C::Accent : C::Inset]}},
+        .hovered = {.color = p[selected ? C::White : C::Text], .bgFill = {.color = p[selected ? C::Accent : C::Hover]}},
+        .pressed = {.color = p[selected ? C::White : C::Text], .bgFill = {.color = p[selected ? C::Accent : C::Selected]}},
+        .focused = {.color = p[selected ? C::White : C::Text], .bgFill = {.color = p[selected ? C::Accent : C::Inset]}}});
+  }
+  if (surface_) {
+    for (const auto &[type, button] : paletteButtons_)
+      if (button) button->bg(p[surface_->tool() == type ? C::ToolSelected : C::Panel]);
+    surface_->refresh();
+  }
+  if (themeButton_) themeButton_->text(appearance_.dark() ? "浅色" : "深色");
 }
 
 void DesignerApp::responsive() {
@@ -372,8 +467,7 @@ void DesignerApp::showXml(bool value) {
   showXml_ = value;
   canvasHost_->hidden(value);
   xml_->hidden(!value);
-  designTab_->bg(value ? raised : background);
-  xmlTab_->bg(value ? background : raised);
+  refreshColors();
   if (value) xml_->text(layoutXml(document_.state));
 }
 
@@ -385,7 +479,9 @@ void DesignerApp::refresh(bool properties) {
   width_->text(std::to_string(document_.state.width));
   height_->text(std::to_string(document_.state.height));
   zoomLabel_->text(std::to_string(int(surface_->zoom() * 100)) + "%");
-  for (int i = 0; i < 5; ++i) deviceButtons_[i]->bg(i == document_.state.device ? accent : 0x1b1b1e);
+  refreshColors();
+  frameButton_->text(document_.state.borderless ? "自绘标题栏" : "系统边框")
+      .enabled(document_.state.device >= 2);
   undoButton_->enabled(document_.canUndo());
   redoButton_->enabled(document_.canRedo());
   if (showXml_) xml_->text(layoutXml(document_.state));
@@ -466,7 +562,7 @@ bool DesignerApp::commitEdits(bool cancelGesture) {
   if (title != document_.state.title) {
     document_.state.title = title;
     document_.checkpoint();
-    surface_->refresh();
+    surface_->refreshTitle();
     refresh(false);
   }
   return true;
@@ -492,6 +588,14 @@ void DesignerApp::changeResolution() {
   auto state = document_.state;
   state.width = static_cast<int>(width);
   state.height = static_cast<int>(height);
+  std::string error;
+  if (!apply(std::move(state), document_.selected, error)) log(error);
+}
+
+void DesignerApp::changeFrame() {
+  if (!commitEdits() || document_.state.device < 2) return;
+  auto state = document_.state;
+  state.borderless = !state.borderless;
   std::string error;
   if (!apply(std::move(state), document_.selected, error)) log(error);
 }
@@ -637,11 +741,20 @@ void DesignerApp::exportLayout() {
   });
 }
 
+TitleBarProps DesignerApp::previewTitleBar() const {
+  return {.iconMode = TitleBarIcon::None, .height = 32, .fontSize = 12,
+      .layout = window_->titleBarButtonsLeft() ? TitleBarLayout::Left : TitleBarLayout::Right,
+      .btnSize = 32};
+}
+
 void DesignerApp::preview() {
   if (!commitEdits()) return;
   if (previewWindow_) { previewWindow_->close(); previewWindow_ = nullptr; }
   auto &window = createWindow({.title = document_.state.title.c_str(),
-      .width = document_.state.width, .height = document_.state.height, .initiallyHidden = true});
+      .width = document_.state.width, .height = document_.state.height,
+      .borderless = document_.state.device >= 2 && document_.state.borderless,
+      .titleBar = previewTitleBar(),
+      .initiallyHidden = true});
   Box root;
   root.init(window).fill();
   auto layout = XmlLayout::fromString(root, layoutXml(document_.state));
@@ -668,14 +781,16 @@ void DesignerApp::confirmDiscard(std::function<void()> action) {
     Box shade;
     shade.init(root).fill().floating().clickable().ref(confirmShade_)
         .style(Style{.bgFill = {.color = RGBA(0x000000, 155)}});
-    VBox dialog({.padding = 20, .gap = 16, .bg = panel, .radius = 8});
+    VBox dialog({.padding = 20, .gap = 16, .bg = color(panel), .radius = 8});
     dialog.init(shade).fillWidth().maxWidth(420).center();
+    appearance_.background(dialog, panel);
     caption(dialog, "保存当前项目？", foreground, 18).fillWidth();
     caption(dialog, "当前修改尚未保存。", muted, 13).fillWidth();
-    FlowBox buttons({.gap = 8, .bg = panel, .radius = 0});
+    FlowBox buttons({.gap = 8, .bg = color(panel), .radius = 0});
     buttons.init(dialog).fillWidth();
+    appearance_.background(buttons, panel);
     std::array<Ref<Button>, 3> choices;
-    actionButton(buttons, "保存并继续", 0, [this] { completeConfirmation(true); }).bg(accent).ref(choices[0]);
+    actionButton(buttons, "保存并继续", 0, [this] { completeConfirmation(true); }).bg(color(accent)).ref(choices[0]);
     actionButton(buttons, "放弃修改", 0, [this] { completeConfirmation(false); }).ref(choices[1]);
     actionButton(buttons, "取消", 0, [this] { cancelConfirmation(); }).ref(choices[2]).focus();
     for (int i = 0; i < 3; ++i) choices[i]->on(keyPreviewEventCode(), [this, choices, i](Event &event) {

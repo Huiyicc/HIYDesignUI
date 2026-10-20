@@ -25,6 +25,7 @@ add_executable(HIYDesignUI
     src/design_surface.cpp
     src/property_inspector.cpp
     src/project_io.cpp
+    src/editor_palette.cpp
 )
 target_link_libraries(HIYDesignUI PRIVATE cppmodule::pugixml)
 hiyui_setup_application(HIYDesignUI)
