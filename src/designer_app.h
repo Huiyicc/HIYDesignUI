@@ -44,6 +44,10 @@ private:
   void erase();
   void copy();
   void paste();
+  void insertComponent(const std::string &type);
+  void insertItem();
+  void previewObject();
+  void editPreviewData();
   void order(int direction);
   void newProject(bool sample);
   void openProject();
@@ -77,6 +81,8 @@ private:
   hiyui::Ref<hiyui::Button> undoButton_, redoButton_, designTab_, xmlTab_, propsTab_, treeTab_;
   hiyui::Ref<hiyui::Button> frameButton_;
   hiyui::Ref<hiyui::Button> themeButton_;
+  hiyui::Ref<hiyui::Button> objectPreview_;
+  std::string paletteType_;
   std::array<hiyui::Ref<hiyui::Button>, 5> deviceButtons_;
   std::vector<std::pair<std::string, hiyui::Ref<hiyui::Button>>> paletteButtons_;
   std::map<hiyui::TreeNodeId, std::string> treeIds_;

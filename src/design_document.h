@@ -10,14 +10,16 @@
 namespace hiydesign {
 
 using Attributes = std::map<std::string, std::string>;
+enum class NodeKind { Component, Item, Template };
 
 struct DesignNode {
   std::string type;
   std::string id;
   Attributes attributes;
   std::vector<DesignNode> children;
-  std::vector<Attributes> items;
   bool locked = false;
+  NodeKind kind = NodeKind::Component;
+  std::string prefix;
   bool operator==(const DesignNode &) const = default;
 };
 
@@ -52,6 +54,7 @@ struct DocumentState {
   unsigned nextId = 1;
   bool borderless = false;
   std::vector<Guide> guides;
+  std::map<std::string, std::vector<Attributes>> collections;
   bool operator==(const DocumentState &) const = default;
 };
 
@@ -66,6 +69,7 @@ public:
   std::string assignIds(DesignNode &node);
   bool eraseSelected();
   void copySelected();
+  const DesignNode *clipboard() const { return clipboard_ ? &*clipboard_ : nullptr; }
   bool paste(const std::string &parentId);
   bool reorder(const std::string &id, int direction);
   void reset(DocumentState value, bool saved);
@@ -86,7 +90,9 @@ private:
 
 std::string attribute(const DesignNode &node, const std::string &key,
                       const std::string &fallback = {});
-bool automaticLayout(const DesignNode &node);
+std::string componentKey(std::string_view namespaceUri, std::string_view localName);
+std::string nodeNamespace(const DesignNode &node);
+std::string nodeName(const DesignNode &node);
 void setGeometry(DesignNode &node, hiyui::Rect rect, bool position = true);
 
 }

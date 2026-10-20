@@ -19,19 +19,6 @@ constexpr auto foreground = EditorColor::Text;
 constexpr auto muted = EditorColor::Muted;
 constexpr auto accent = EditorColor::Accent;
 
-uint32_t componentIcon(const std::string &type) {
-  static const std::map<std::string, uint32_t> icons = {
-      {"Button", HIYUI_ICON_SMART_BUTTON}, {"Label", HIYUI_ICON_TITLE},
-      {"Input", HIYUI_ICON_INPUT}, {"Checkbox", HIYUI_ICON_CHECK_BOX},
-      {"Radio", HIYUI_ICON_RADIO_BUTTON_CHECKED}, {"Switch", HIYUI_ICON_TOGGLE_ON},
-      {"Dropdown", HIYUI_ICON_ARROW_DROP_DOWN_CIRCLE}, {"Slider", HIYUI_ICON_TUNE},
-      {"Progress", HIYUI_ICON_LINEAR_SCALE}, {"Image", HIYUI_ICON_IMAGE},
-      {"Box", HIYUI_ICON_CROP_SQUARE}, {"VBox", HIYUI_ICON_VIEW_AGENDA},
-      {"HBox", HIYUI_ICON_VIEW_COLUMN}, {"FlowBox", HIYUI_ICON_VIEW_QUILT},
-      {"Card", HIYUI_ICON_WEB_ASSET}};
-  return icons.at(type);
-}
-
 }
 
 Button DesignerApp::actionButton(Widget &parent, const char *text, uint32_t icon,
@@ -67,7 +54,7 @@ std::string lower(std::string text) {
 }
 
 bool supportedTree(const DesignNode &node, const ComponentCatalog &catalog, std::string &error) {
-  if (!catalog.find(node.type)) { error = "当前组件箱不支持 " + node.type; return false; }
+  if (node.kind == NodeKind::Component && !catalog.find(node.type)) { error = "未注册组件 " + node.type; return false; }
   for (const auto &child : node.children) if (!supportedTree(child, catalog, error)) return false;
   return true;
 }
@@ -177,7 +164,8 @@ void DesignerApp::buildMenus(Widget &parent) {
             status(themeAnimation_ ? "主题动画已开启" : "主题动画已关闭");
           }),
           item("窗口 XML", [this] { showXml(!showXml_); })}},
-      {.text = "运行", .children = {item("交互预览", [this] { preview(); })}},
+      {.text = "运行", .children = {item("交互预览", [this] { preview(); }),
+          item("预览所选对象", [this] { previewObject(); }), item("编辑预览数据", [this] { editPreviewData(); })}},
       {.text = "帮助", .children = {
           item("画布操作", [this] { log("拖入或框选创建；拖动主体移动；边框手柄调整尺寸；靠近辅助线吸附，按住 Ctrl 临时关闭；方向键微调；Delete 删除；Esc 取消。自动布局中的拖动改变顺序。"); }),
           item("响应式布局", [this] { log("Box 使用绝对定位。VBox / HBox / FlowBox 使用自动布局；fill、flex、maxWidth 控制随视口变化的尺寸。XML 页展示当前真实布局。"); })}}
@@ -229,8 +217,11 @@ void DesignerApp::buildPalette(Widget &parent) {
   VBox list({.padding = 6, .gap = 2, .bg = color(panel), .radius = 0, .scroll = ScrollMode::Vertical});
   list.init(left).fillWidth().height(0).flex(1);
   appearance_.background(list, panel);
-  for (const char *category : {"常用组件", "容器与布局"}) {
-    caption(list, category, muted, 11).fillWidth().height(24);
+  std::vector<std::string> categories;
+  for (const auto &entry : catalog_.entries())
+    if (std::find(categories.begin(), categories.end(), entry.category) == categories.end()) categories.push_back(entry.category);
+  for (const auto &category : categories) {
+    caption(list, category.c_str(), muted, 11).fillWidth().height(24);
     VBox group({.gap = 0, .bg = color(panel), .radius = 0});
     group.init(list).fillWidth();
     appearance_.background(group, panel);
@@ -241,16 +232,24 @@ void DesignerApp::buildPalette(Widget &parent) {
       button.height(26).fillWidth().bg(color(panel)).ref(ref).pressLock().scrollChain(false);
       HBox content({.gap = 9, .bg = HIYUI_TRANSPARENT, .radius = 0});
       content.init(button).fill().clickable(false);
-      Icon icon({.codepoint = componentIcon(entry.type), .size = 16});
+      Icon icon({.codepoint = entry.metadata.design.icon ? entry.metadata.design.icon : HIYUI_ICON_WIDGETS, .size = 16});
       icon.init(content).size(16, 16).color(0x7fb3e0).clickable(false);
       Ref<Icon> iconRef;
       icon.ref(iconRef);
       appearance_.bind(icon, [iconRef](Widget &, const EditorPalette &p) { iconRef->color(p[EditorColor::Icon]); });
-      caption(content, entry.type.c_str()).clickable(false);
-      button.tooltip(catalog_.container(entry.type) ? "拖入容器；Box 可自由定位，其他容器自动排列" : "拖入画布，或单击后拖出创建区域");
+      const auto label = entry.namespaceUri == XmlBuiltinNamespaceUri ? entry.localName : entry.prefix + ":" + entry.localName;
+      caption(content, label.c_str()).clickable(false);
+      button.tooltip(entry.metadata.resourceOnly ? "添加配置对象，在属性面板中单独预览" : "拖入画布，或选择目标节点后点击添加组件");
       paletteButtons_.push_back({entry.type, ref});
       for (const auto code : {EventCode::Pressed, EventCode::Pressing, EventCode::Released, EventCode::PressLost})
         button.on(code, [this, type = entry.type](Event &event) {
+          if (event.code() == EventCode::Pressed) paletteType_ = type;
+          const auto *entry = catalog_.find(type);
+          const auto *selected = document_.find(document_.selected);
+          if (entry && (entry->metadata.resourceOnly || (selected && !catalog_.visual(document_, *selected)))) {
+            if (event.code() == EventCode::Released) insertComponent(type);
+            return;
+          }
           if (showXml_) showXml(false);
           Point point;
           bool overToolbox = false;
@@ -354,6 +353,10 @@ void DesignerApp::buildInspector(Widget &parent) {
   title.on(EventCode::Ready, [this] { commitEdits(false); });
   title.on(EventCode::Defocused, [this] { commitEdits(false); });
   caption(right, "", muted, 11).ref(selectionLabel_).fillWidth().height(30).textOverflow(TextOverflow::Ellipsis);
+  auto nodeActions = strip(right, 32);
+  actionButton(nodeActions, "添加组件", 0, [this] { insertComponent(paletteType_); });
+  actionButton(nodeActions, "新增子项", 0, [this] { insertItem(); });
+  actionButton(nodeActions, "预览对象", 0, [this] { previewObject(); }).ref(objectPreview_);
   Box host({.bg = color(panel)});
   host.init(right).fillWidth().height(0).flex(1);
   appearance_.background(host, panel);
@@ -504,7 +507,7 @@ void DesignerApp::refresh(bool properties) {
   if (properties) selectionChanged();
   else {
     const auto *node = document_.find(document_.selected);
-    selectionLabel_->text(node ? node->id + " : " + node->type : "未选择组件");
+    selectionLabel_->text(node ? node->id + " : " + nodeName(*node) : "未选择组件");
   }
 }
 
@@ -512,9 +515,11 @@ void DesignerApp::selectionChanged(bool preserveEditor) {
   if (!inspector_) return;
   inspector_->refresh(preserveEditor);
   const auto *node = document_.find(document_.selected);
-  selectionLabel_->text(node ? node->id + " : " + node->type : "未选择组件");
+  selectionLabel_->text(node ? node->id + " : " + nodeName(*node) : "未选择组件");
+  const auto *entry = node && node->kind == NodeKind::Component ? catalog_.find(node->type) : nullptr;
+  if (objectPreview_) objectPreview_->enabled(entry && entry->metadata.activatable);
   const auto rect = surface_->geometry(document_.selected);
-  position_->text(node ? "X " + std::to_string(rect.x) + "   Y " + std::to_string(rect.y) +
+  position_->text(node && catalog_.visual(document_, *node) ? "X " + std::to_string(rect.x) + "   Y " + std::to_string(rect.y) +
       "   W " + std::to_string(rect.w) + "   H " + std::to_string(rect.h) : "");
   for (const auto &[id, name] : treeIds_)
     if (name == document_.selected) { tree_->selectNode(id); break; }
@@ -528,7 +533,7 @@ void DesignerApp::refreshTree() {
     TreeNodeConfig value;
     value.id = next++;
     treeIds_[value.id] = node.id;
-    treeLabels_.push_back(node.id + "  : " + node.type + (node.locked ? "  [锁定]" : ""));
+    treeLabels_.push_back(node.id + "  : " + nodeName(node) + (node.locked ? "  [锁定]" : ""));
     value.text = treeLabels_.back().c_str();
     value.expanded = true;
     for (const auto &child : node.children) value.children.push_back(self(self, child));
@@ -644,11 +649,16 @@ void DesignerApp::paste() {
   if (!commitEdits()) return;
   DesignDocument candidate = document_;
   auto *owner = candidate.find(candidate.selected);
-  if (owner && !catalog_.container(owner->type)) owner = candidate.parent(owner->id);
-  if (!owner || !catalog_.container(owner->type) || !candidate.paste(owner->id)) return;
+  if (!candidate.clipboard()) return;
+  auto copied = *candidate.clipboard();
+  copied.id.clear();
+  while (owner && !catalog_.accepts(candidate, *owner, copied)) owner = candidate.parent(owner->id);
+  if (!owner || !candidate.paste(owner->id)) { status("目标节点不接受剪贴板内容"); return; }
   auto *node = candidate.find(candidate.selected);
-  if (automaticLayout(*owner)) { node->attributes.erase("x"); node->attributes.erase("y"); node->attributes.erase("center"); }
   std::string error;
+  if (!catalog_.assignItemIds(candidate, *owner, *node, error)) { log(error); return; }
+  if (catalog_.automaticLayout(*owner)) { node->attributes.erase("x"); node->attributes.erase("y"); node->attributes.erase("center"); }
+  ensurePreviewCollections(candidate.state, catalog_);
   if (!apply(std::move(candidate.state), candidate.selected, error)) log(error);
 }
 
@@ -763,7 +773,7 @@ TitleBarProps DesignerApp::previewTitleBar() const {
 void DesignerApp::preview() {
   if (!commitEdits()) return;
   if (previewWindow_) { previewWindow_->close(); previewWindow_ = nullptr; }
-  auto layout = XmlWindowLayout::fromString(windowXml(document_.state));
+  auto layout = XmlWindowLayout::fromString(windowXml(document_.state), previewContext(document_.state));
   if (!layout) {
     for (const auto &diagnostic : layout.diagnostics()) log(diagnostic.message);
     return;

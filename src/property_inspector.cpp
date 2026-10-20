@@ -120,11 +120,11 @@ void PropertyInspector::refresh(bool preserveEditor) {
   groups.push_back(group(1, "标识"));
   groups.push_back(group(2, "布局"));
   groups.push_back(group(3, "内容与外观"));
-  auto identity = textItem(10, "id", node->id);
+  auto identity = textItem(10, node->kind == NodeKind::Component ? "id" : "编辑标识", node->id);
   identity.readOnly = node->locked;
   groups[0].children.push_back(std::move(identity));
   fields_[10] = "$id";
-  auto type = textItem(11, "类型", node->type);
+  auto type = textItem(11, "类型", nodeName(*node));
   type.readOnly = true;
   groups[0].children.push_back(std::move(type));
   PropertyItem locked;
@@ -136,22 +136,31 @@ void PropertyInspector::refresh(bool preserveEditor) {
   groups[0].children.push_back(std::move(locked));
   fields_[12] = "$locked";
   const auto *parent = document_.parent(nodeId_);
-  auto layout = textItem(13, "父布局", parent ? automaticLayout(*parent) ? "自动排列" : "绝对定位" : "视口根节点");
+  const auto *parentEntry = parent ? catalog_.find(parent->type) : nullptr;
+  auto layout = textItem(13, "父布局", parent ? catalog_.automaticLayout(*parent) ? "自动排列" : "绝对定位" : "视口根节点");
   layout.readOnly = true;
   groups[0].children.push_back(std::move(layout));
+  auto uri = textItem(14, "namespace", nodeNamespace(*node));
+  uri.readOnly = true;
+  groups[0].children.push_back(std::move(uri));
+  auto children = textItem(15, "子节点", std::to_string(node->children.size()));
+  children.readOnly = true;
+  children.description = "在组件树选择条目；使用新增子项、添加组件及排序按钮编辑。";
+  groups[0].children.push_back(std::move(children));
   PropertyId id = 100;
-  for (const auto &spec : catalog_.attributes(node->type)) {
-    if (spec.name == "id" || spec.kind == XmlAttributeKind::Command ||
-        spec.kind == XmlAttributeKind::Resource || spec.name == "bind" || spec.name == "twoWay") continue;
+  for (const auto &spec : catalog_.attributes(document_, *node)) {
+    if (spec.name == "id" && node->kind == NodeKind::Component) continue;
     auto item = textItem(id, spec.name, attribute(*node, spec.name));
     item.description = spec.description;
     if (!item.description.empty()) item.description += "\n";
-    item.description += "重置后使用组件默认值。";
+    item.description += spec.required ? "必填属性。" : "默认值：" + defaultText(spec) + "；重置后使用组件默认值。";
     if (spec.name == "width" || spec.name == "height" || spec.name == "maxWidth")
       item.description += "尺寸单位为逻辑像素；-1 使用该组件的自动尺寸规则。";
     item.defaultValue = PropertyValue("");
     item.modified = node->attributes.contains(spec.name);
-    item.readOnly = node->locked || (parent && automaticLayout(*parent) && (spec.name == "x" || spec.name == "y" || spec.name == "center"));
+    item.readOnly = node->locked || (parent && catalog_.automaticLayout(*parent) && (spec.name == "x" || spec.name == "y" || spec.name == "center"));
+    if (parentEntry && parentEntry->metadata.design.layout == XmlDesignLayout::Managed &&
+        (spec.name == "width" || spec.name == "height")) item.readOnly = true;
     if (spec.kind == XmlAttributeKind::Boolean || spec.kind == XmlAttributeKind::Enumeration) {
       item.kind = PropertyKind::Enum;
       item.editor = "darkChoice";
@@ -169,28 +178,6 @@ void PropertyInspector::refresh(bool preserveEditor) {
     }
     fields_[id++] = spec.name;
     groups[layoutField(spec.name) ? 1 : 2].children.push_back(std::move(item));
-  }
-  if (node->type == "Dropdown") {
-    auto items = group(4, "下拉条目");
-    auto count = textItem(20, "条目数量", std::to_string(node->items.size()));
-    count.description = "0 至 256；增加空条目或移除末尾条目。";
-    count.readOnly = node->locked;
-    items.children.push_back(std::move(count));
-    fields_[20] = "$itemCount";
-    const auto *entry = catalog_.find(node->type);
-    for (size_t index = 0; index < node->items.size(); ++index) {
-      for (const auto &spec : entry->metadata.itemAttributes) {
-        const auto found = node->items[index].find(spec.name);
-        const auto key = "$item/" + std::to_string(index) + "/" + spec.name;
-        auto item = textItem(id, std::to_string(index + 1) + "." + spec.name,
-                             found == node->items[index].end() ? "" : found->second);
-        item.defaultValue = PropertyValue("");
-        item.readOnly = node->locked;
-        fields_[id++] = key;
-        items.children.push_back(std::move(item));
-      }
-    }
-    groups.push_back(std::move(items));
   }
   grid_->properties(std::move(groups));
   if (!editingField.empty()) {
@@ -243,22 +230,8 @@ void PropertyInspector::submit(PropertyCommitRequest &request) {
     }
     selection = *text;
     node->id = *text;
-  } else if (name == "$itemCount") {
-    int64_t count = 0;
-    if (!xmlTryParseInt(*text, count) || count < 0 || count > 256) {
-      request.reject("条目数量须为 0 至 256"); return;
-    }
-    node->items.resize(static_cast<size_t>(count), {{"text", "新选项"}});
-    node->attributes.erase("selected");
-  } else if (name.starts_with("$item/")) {
-    const auto slash = name.find('/', 6);
-    const auto index = static_cast<size_t>(std::stoul(name.substr(6, slash - 6)));
-    if (index >= node->items.size()) { request.reject("条目已移除"); return; }
-    const auto key = name.substr(slash + 1);
-    if (change.origin == PropertyChangeOrigin::Reset || (text->empty() && key != "text")) node->items[index].erase(key);
-    else node->items[index][key] = *text;
   } else {
-    const auto specs = catalog_.attributes(node->type);
+    const auto specs = catalog_.attributes(candidate, *node);
     const auto spec = std::find_if(specs.begin(), specs.end(), [&](const auto &value) { return value.name == name; });
     const bool emptyString = spec != specs.end() && spec->kind == XmlAttributeKind::String;
     if (change.origin == PropertyChangeOrigin::Reset || (text->empty() && !emptyString)) node->attributes.erase(name);

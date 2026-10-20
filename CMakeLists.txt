@@ -20,6 +20,7 @@ endif()
 add_executable(HIYDesignUI
     src/main.cpp
     src/designer_app.cpp
+    src/node_editing.cpp
     src/design_document.cpp
     src/component_catalog.cpp
     src/design_surface.cpp

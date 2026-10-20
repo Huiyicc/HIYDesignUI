@@ -169,14 +169,17 @@ bool DesignSurface::reload(std::string &error) {
   const auto xml = layoutXml(document_.state);
   error = catalog_.validate(xml);
   if (!error.empty()) return false;
-  if (!preview_->reloadFromString(xml)) {
-    for (const auto &diagnostic : preview_->diagnostics()) {
+  auto candidate = std::make_unique<XmlReloadHost>(content_, previewContext(document_.state));
+  if (!candidate->reloadFromString(xml)) {
+    for (const auto &diagnostic : candidate->diagnostics()) {
       if (!error.empty()) error += "\n";
       error += diagnostic.message;
     }
     if (error.empty()) error = "无法创建预览组件";
     return false;
   }
+  activation_.close();
+  preview_ = std::move(candidate);
   auto root = widget(document_.state.root.id);
   const auto redirect = [overlay = overlay_](auto &&self, Widget &node) -> void {
     node.on(EventCode::Focused, [overlay] { if (overlay) overlay->focus(); });
@@ -189,7 +192,17 @@ bool DesignSurface::reload(std::string &error) {
 }
 
 Ref<Widget> DesignSurface::widget(const std::string &id) const {
-  return preview_ ? preview_->get<Widget>(id.c_str()) : Ref<Widget>{};
+  const auto *node = document_.find(id);
+  if (!preview_ || !node || !catalog_.visual(document_, *node)) return {};
+  if (node->kind != NodeKind::Item) return preview_->get<Widget>(id.c_str());
+  const auto *parent = document_.parent(id);
+  if (!parent) return {};
+  size_t index = 0;
+  for (const auto &child : parent->children) {
+    if (child.id == id) return preview_->layout().itemHost(parent->id.c_str(), index);
+    if (child.kind == NodeKind::Item) ++index;
+  }
+  return {};
 }
 
 Rect DesignSurface::geometry(const std::string &id) const {
@@ -238,7 +251,7 @@ Point DesignSurface::snapOffset(const std::string &id, Rect bounds,
                                 bool left, bool right, bool top, bool bottom) const {
   Point offset;
   const auto *owner = document_.find(id);
-  if (!guidesVisible_ || HotkeyManager::ctrlPressed() || !owner || automaticLayout(*owner)) return offset;
+  if (!guidesVisible_ || HotkeyManager::ctrlPressed() || !owner || catalog_.automaticLayout(*owner)) return offset;
   float scale = 1;
   content_.with([&](VBox &content) { scale = scaleOf(content); });
   Point parentOrigin;
@@ -318,7 +331,11 @@ std::string DesignSurface::hitNode(const DesignNode &node, Point screen, bool co
     auto result = hitNode(*it, screen, containerOnly);
     if (!result.empty()) return result;
   }
-  return !containerOnly || (catalog_.container(node.type) && !node.locked) ? node.id : std::string{};
+  if (!containerOnly) return node.id;
+  if (node.locked || !catalog_.container(document_, node)) return {};
+  DesignNode child;
+  child.type = tool_;
+  return tool_.empty() || catalog_.accepts(document_, node, child) ? node.id : std::string{};
 }
 
 std::string DesignSurface::hit(Point screen, bool containerOnly) const {
@@ -327,10 +344,50 @@ std::string DesignSurface::hit(Point screen, bool containerOnly) const {
 
 bool DesignSurface::select(std::string id) {
   if (beforeEdit && !beforeEdit()) return false;
+  const auto before = document_.state;
+  const auto *node = document_.find(id);
+  for (auto *current = node; current; current = document_.parent(current->id)) {
+    if (current->kind != NodeKind::Item) continue;
+    auto *parent = document_.parent(current->id);
+    const auto *entry = parent ? catalog_.find(parent->type) : nullptr;
+    if (!entry || entry->metadata.design.selectionAttribute.empty()) continue;
+    size_t index = 0;
+    for (const auto &child : parent->children) {
+      if (child.id == current->id) break;
+      if (child.kind == NodeKind::Item) ++index;
+    }
+    parent->attributes[entry->metadata.design.selectionAttribute] = std::to_string(index);
+  }
+  if (before != document_.state) {
+    std::string error;
+    if (!reload(error)) { document_.state = before; if (onStatus) onStatus(error); return false; }
+    document_.checkpoint();
+  }
   document_.selected = std::move(id);
+  if (before != document_.state && onChange) onChange();
   refresh();
   if (onSelection) onSelection();
   return true;
+}
+
+bool DesignSurface::previewSelection(std::string &error) {
+  const auto *node = document_.find(document_.selected);
+  const auto *entry = node && node->kind == NodeKind::Component ? catalog_.find(node->type) : nullptr;
+  if (!preview_ || !entry || !entry->metadata.activatable) {
+    error = "所选节点没有独立预览操作";
+    return false;
+  }
+  Ref<Widget> anchor;
+  for (const auto *parent = document_.parent(node->id); parent && !anchor; parent = document_.parent(parent->id))
+    anchor = widget(parent->id);
+  if (!anchor) { error = "请先在画布上创建该对象的宿主"; return false; }
+  activation_.close();
+  anchor.with([&](Widget &value) { activation_ = preview_->layout().activate(node->id.c_str(), value); });
+  for (const auto &diagnostic : activation_.diagnostics()) {
+    if (!error.empty()) error += "\n";
+    error += diagnostic.message;
+  }
+  return static_cast<bool>(activation_);
 }
 
 void DesignSurface::tool(std::string type) {
@@ -534,11 +591,14 @@ void DesignSurface::begin(Point screen) {
     if (handle_ < 0 && !select(hit(screen))) return;
     auto *node = document_.find(document_.selected);
     auto *parent = document_.parent(document_.selected);
-    if (!node || !parent || node->locked || parent->locked) return;
+    if (!node || !parent || node->locked || parent->locked || node->kind != NodeKind::Component ||
+        !widget(node->id)) return;
+    const auto *parentEntry = catalog_.find(parent->type);
+    if (parentEntry && parentEntry->metadata.design.layout == XmlDesignLayout::Managed) return;
     owner_ = parent->id;
     startRect_ = geometry(node->id);
     anchor_ = inParent(owner_, screen);
-    gesture_ = handle_ >= 0 ? Gesture::Resize : automaticLayout(*parent) ? Gesture::Reorder : Gesture::Move;
+    gesture_ = handle_ >= 0 ? Gesture::Resize : catalog_.automaticLayout(*parent) ? Gesture::Reorder : Gesture::Move;
   }
   before_ = document_.state;
   viewport_->scrollMode(ScrollMode::Off);
@@ -608,7 +668,7 @@ void DesignSurface::drag(Point screen) {
     rect.h = std::clamp(rect.h, 8, 2160);
     if (left) rect.x = startRect_.x + startRect_.w - rect.w;
     if (top) rect.y = startRect_.y + startRect_.h - rect.h;
-    setGeometry(*node, rect, !automaticLayout(*owner));
+    catalog_.setGeometry(*node, rect, !catalog_.automaticLayout(*owner));
   }
   if (previous == document_.state) return;
   std::string error;
@@ -645,12 +705,20 @@ void DesignSurface::finish(Point screen) {
 void DesignSurface::create(Rect bounds, const std::string &parentId) {
   auto *owner = document_.find(parentId);
   if (!owner || owner->locked || !catalog_.find(tool_)) return;
-  auto node = catalog_.create(tool_);
-  setGeometry(node, bounds, !automaticLayout(*owner));
-  if (automaticLayout(*owner)) { node.attributes.erase("x"); node.attributes.erase("y"); }
+  DesignNode node;
+  std::string error;
+  if (!catalog_.create(tool_, node, error)) { if (onStatus) onStatus(error); return; }
+  node.id.clear();
+  if (!catalog_.accepts(document_, *owner, node)) {
+    if (onStatus) onStatus("该节点不接受此组件，或已达到数量限制");
+    return;
+  }
+  catalog_.setGeometry(node, bounds, !catalog_.automaticLayout(*owner));
+  if (catalog_.automaticLayout(*owner)) { node.attributes.erase("x"); node.attributes.erase("y"); }
   document_.assignIds(node);
   document_.selected = node.id;
   owner->children.push_back(std::move(node));
+  ensurePreviewCollections(document_.state, catalog_);
 }
 
 bool DesignSurface::commitGesture() {
@@ -739,10 +807,13 @@ void DesignSurface::nudge(int dx, int dy) {
   if (gesture_ != Gesture::None || (beforeEdit && !beforeEdit())) return;
   auto *node = document_.find(document_.selected);
   auto *parent = document_.parent(document_.selected);
-  if (!node || !parent || node->locked || parent->locked) return;
+  if (!node || !parent || node->locked || parent->locked || node->kind != NodeKind::Component ||
+        !widget(node->id)) return;
+  const auto *parentEntry = catalog_.find(parent->type);
+  if (parentEntry && parentEntry->metadata.design.layout == XmlDesignLayout::Managed) return;
   before_ = document_.state;
   owner_ = parent->id;
-  if (automaticLayout(*parent)) {
+  if (catalog_.automaticLayout(*parent)) {
     const auto it = std::find_if(parent->children.begin(), parent->children.end(),
                                [&](const auto &child) { return child.id == node->id; });
     const auto index = std::distance(parent->children.begin(), it);
@@ -813,7 +884,7 @@ void DesignSurface::paint(DrawCtx &draw, const PaintCtx &ctx, bool overlay) {
   if (!dropTarget_.empty()) draw.strokeRect(localRect(screenBounds(dropTarget_)), 0x0078d4, ctx.px(2));
   if (gesture_ == Gesture::Create || (gesture_ == Gesture::Palette && !dropTarget_.empty())) {
     const auto &owner = gesture_ == Gesture::Create ? owner_ : dropTarget_;
-    if (gesture_ == Gesture::Create || !automaticLayout(*document_.find(owner))) {
+    if (gesture_ == Gesture::Create || !catalog_.automaticLayout(*document_.find(owner))) {
       const auto start = inScreen(owner, {draftRect_.x, draftRect_.y});
       const auto end = inScreen(owner, {draftRect_.x + draftRect_.w, draftRect_.y + draftRect_.h});
       draw.strokeRect(localRect({start.x, start.y, end.x - start.x, end.y - start.y}), 0x00b4d8, ctx.px(1));
@@ -832,7 +903,10 @@ void DesignSurface::paint(DrawCtx &draw, const PaintCtx &ctx, bool overlay) {
   if (rect.w <= 0 || rect.h <= 0) return;
   const uint32_t color = colors[node->locked ? C::Muted : C::Guide];
   draw.strokeRect(rect, color, ctx.px(1));
-  if (document_.parent(node->id) && !node->locked) {
+  const auto *parent = document_.parent(node->id);
+  const auto *parentEntry = parent ? catalog_.find(parent->type) : nullptr;
+  if (parent && !parent->locked && !node->locked && node->kind == NodeKind::Component &&
+      (!parentEntry || parentEntry->metadata.design.layout != XmlDesignLayout::Managed)) {
     const int half = ctx.px(3);
     for (const auto p : handles(rect)) {
       Rect handle{p.x - half, p.y - half, half * 2 + 1, half * 2 + 1};

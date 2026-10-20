@@ -32,6 +32,7 @@ public:
   void clearGuides();
   hiyui::Rect geometry(const std::string &id) const;
   void nudge(int dx, int dy);
+  bool previewSelection(std::string &error);
   std::function<bool()> beforeEdit;
   std::function<void()> onSelection;
   std::function<void()> onChange;
@@ -53,6 +54,7 @@ private:
   hiyui::Ref<hiyui::CustomDraw> backdrop_, overlay_, chrome_;
   hiyui::Ref<hiyui::TitleBar> titleBar_;
   std::unique_ptr<hiyui::XmlReloadHost> preview_;
+  hiyui::XmlActivation activation_;
   std::string tool_, owner_, dropTarget_;
   Gesture gesture_ = Gesture::None;
   std::optional<DocumentState> before_;

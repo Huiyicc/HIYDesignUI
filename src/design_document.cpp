@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <cctype>
 #include <utility>
+#include <hiyui/xml/xml_registry.h>
 
 namespace hiydesign {
 namespace {
@@ -35,7 +36,7 @@ const DesignNode *DesignDocument::parent(const std::string &id) const {
 }
 
 std::string DesignDocument::assignIds(DesignNode &node) {
-  std::string prefix = node.type;
+  std::string prefix = nodeName(node);
   std::transform(prefix.begin(), prefix.end(), prefix.begin(),
                  [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
   do {
@@ -123,9 +124,20 @@ std::string attribute(const DesignNode &node, const std::string &key,
   return it == node.attributes.end() ? fallback : it->second;
 }
 
-bool automaticLayout(const DesignNode &node) {
-  return node.type == "VBox" || node.type == "HBox" ||
-         node.type == "FlowBox" || node.type == "Card";
+std::string componentKey(std::string_view uri, std::string_view name) {
+  return uri == hiyui::XmlBuiltinNamespaceUri ? std::string(name) :
+      "{" + std::string(uri) + "}" + std::string(name);
+}
+
+std::string nodeNamespace(const DesignNode &node) {
+  const auto end = node.type.rfind('}');
+  return node.type.starts_with('{') && end != std::string::npos ?
+      node.type.substr(1, end - 1) : hiyui::XmlBuiltinNamespaceUri;
+}
+
+std::string nodeName(const DesignNode &node) {
+  const auto end = node.type.rfind('}');
+  return node.type.starts_with('{') && end != std::string::npos ? node.type.substr(end + 1) : node.type;
 }
 
 void setGeometry(DesignNode &node, hiyui::Rect rect, bool position) {
