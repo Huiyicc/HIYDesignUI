@@ -1,4 +1,5 @@
 #include "designer_app.h"
+#include "layout_presets.h"
 #include "project_io.h"
 #include <hiyui/misc/async.h>
 #include <hiyui/misc/hotkey.h>
@@ -69,8 +70,8 @@ DesignerApp::~DesignerApp() {
 
 void DesignerApp::setup() {
   setTheme(Theme::fromSeed(0x0078d4));
-  document_.reset(loginDocument(), false);
-  document_.selected = "login";
+  document_.reset(adaptiveDocument(), false);
+  document_.selected = "projectSettings";
   window_ = &createWindow({.title = "HIYDesignUI", .width = 1440, .height = 900,
       .borderless = true, .titleBar = {.height = 32, .bg = 0x2d2d30, .textColor = color(foreground), .fontSize = 12}});
   Box root({.bg = color(background)});
@@ -135,15 +136,27 @@ void DesignerApp::buildMenus(Widget &parent) {
     value.accelerator = key;
     return value;
   };
+  std::vector<ContextMenuItem> presets;
+  for (const auto &preset : layoutPresets()) {
+    presets.push_back(item(preset.name, [this, preset] {
+      auto state = emptyDocument();
+      std::string error;
+      if (!parseNodeXml(preset.xml, catalog_, state.root, error)) { log(error); return; }
+      state.title = preset.name;
+      newProject(std::move(state));
+    }));
+  }
   menu.items({
       {.text = "文件", .children = {
-          item("新建项目", [this] { newProject(false); }, {.sdlKey = 'n', .primary = true}),
+          item("新建项目", [this] { newProject(emptyDocument()); }, {.sdlKey = 'n', .primary = true}),
+          {.text = "从布局预设新建", .children = std::move(presets)},
           item("打开项目…", [this] { openProject(); }, {.sdlKey = 'o', .primary = true}),
           item("保存", [this] { save(); }, {.sdlKey = 's', .primary = true}),
           item("另存为…", [this] { save(true); }, {.sdlKey = 's', .primary = true, .shift = true}),
           item("导出窗口 XML…", [this] { exportLayout(true); }),
           item("导出布局 XML…", [this] { exportLayout(); }),
-          item("打开登录示例", [this] { newProject(true); })}},
+          item("打开多端工作台示例", [this] { newProject(adaptiveDocument()); }),
+          item("打开登录示例", [this] { newProject(loginDocument()); })}},
       {.text = "编辑", .children = {
           item("撤销", [this] { undo(); }), item("重做", [this] { undo(true); }),
           item("复制组件", [this] { copy(); }), item("粘贴组件", [this] { paste(); }),
@@ -177,7 +190,7 @@ void DesignerApp::buildToolbar(Widget &parent) {
   toolbar.scrollMode(ScrollMode::Off);
   auto row = strip(toolbar, 38, raised);
   row.width(0).flex(1).padding(0);
-  actionButton(row, nullptr, HIYUI_ICON_ADD, [this] { newProject(false); }).tooltip("新建项目");
+  actionButton(row, nullptr, HIYUI_ICON_ADD, [this] { newProject(emptyDocument()); }).tooltip("新建项目");
   actionButton(row, nullptr, HIYUI_ICON_FOLDER_OPEN, [this] { openProject(); }).tooltip("打开项目");
   actionButton(row, nullptr, HIYUI_ICON_SAVE, [this] { save(); }).tooltip("保存项目 XML");
   caption(row, "│", line);
@@ -365,6 +378,7 @@ void DesignerApp::buildInspector(Widget &parent) {
   appearance_.background(property, panel);
   inspector_ = std::make_unique<PropertyInspector>(document_, catalog_, appearance_);
   inspector_->init(property);
+  inspector_->refreshRequested = [this] { queueInspector(); };
   inspector_->apply = [this](DocumentState state, std::string selected, std::string &error) {
     if (fileDialog_ || confirmShade_) {
       error = "请先完成当前对话框操作";
@@ -683,17 +697,16 @@ std::filesystem::path DesignerApp::resourceBase() const {
   return projectPath_.empty() ? std::filesystem::current_path() : projectPath_.parent_path();
 }
 
-void DesignerApp::newProject(bool sample) {
+void DesignerApp::newProject(DocumentState value) {
   if (fileDialog_ || confirmShade_) return;
-  confirmDiscard([this, sample] {
-    auto state = sample ? loginDocument() : emptyDocument();
+  confirmDiscard([this, state = std::move(value)]() mutable {
     std::string error;
     if (!apply(state, state.root.id, error)) { log(error); return; }
     document_.reset(std::move(state), false);
     projectPath_.clear();
     surface_->fit();
     refresh();
-    log(sample ? "已打开登录示例" : "已创建空白项目");
+    log("已创建项目：" + document_.state.title);
   });
 }
 

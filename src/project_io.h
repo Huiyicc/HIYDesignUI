@@ -18,6 +18,7 @@ std::string pathText(const std::filesystem::path &path);
 void relocateResources(DocumentState &document, const std::filesystem::path &sourceBase,
                        const std::filesystem::path &destinationBase = {});
 DocumentState loginDocument();
+DocumentState adaptiveDocument();
 DocumentState emptyDocument();
 bool parseNodeXml(const std::string &xml, const ComponentCatalog &catalog, DesignNode &node,
                   std::string &error, const ComponentEntry *owner = nullptr, NodeKind kind = NodeKind::Component);

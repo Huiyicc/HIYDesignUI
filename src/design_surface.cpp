@@ -575,7 +575,8 @@ void DesignSurface::begin(Point screen) {
   moved_ = false;
   handle_ = -1;
   const auto selected = widget(document_.selected);
-  if (tool_.empty() && selected && selected->isVisible()) {
+  const auto *selectedNode = document_.find(document_.selected);
+  if (tool_.empty() && selected && selected->isVisible() && selectedNode && !responsiveSize(*selectedNode)) {
     const auto rect = screenBounds(document_.selected);
     const auto points = handles(rect);
     int radius = 5;
@@ -602,6 +603,7 @@ void DesignSurface::begin(Point screen) {
         !widget(node->id)) return;
     const auto *parentEntry = catalog_.find(parent->type);
     if (parentEntry && parentEntry->metadata.design.layout == XmlDesignLayout::Managed) return;
+    if (handle_ >= 0 && responsiveSize(*node)) return;
     owner_ = parent->id;
     startRect_ = geometry(node->id);
     anchor_ = inParent(owner_, screen);
@@ -912,7 +914,7 @@ void DesignSurface::paint(DrawCtx &draw, const PaintCtx &ctx, bool overlay) {
   draw.strokeRect(rect, color, ctx.px(1));
   const auto *parent = document_.parent(node->id);
   const auto *parentEntry = parent ? catalog_.find(parent->type) : nullptr;
-  if (parent && !parent->locked && !node->locked && node->kind == NodeKind::Component &&
+  if (parent && !parent->locked && !node->locked && !responsiveSize(*node) && node->kind == NodeKind::Component &&
       (!parentEntry || parentEntry->metadata.design.layout != XmlDesignLayout::Managed)) {
     const int half = ctx.px(3);
     for (const auto p : handles(rect)) {

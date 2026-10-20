@@ -42,6 +42,17 @@ void writeNode(pugi::xml_node parent, const DesignNode &node, bool editor, bool 
   for (const auto &[name, value] : node.attributes)
     element.append_attribute(name.c_str()) = value.c_str();
   if (editor && node.locked) element.append_attribute("designLocked") = true;
+  if (node.layoutRules) {
+    auto rules = element.append_child("LayoutRules");
+    rules.append_attribute("xmlns") = hiyui::XmlBuiltinNamespaceUri;
+    for (const auto &[name, value] : node.layoutRules->base)
+      rules.append_attribute(name.c_str()) = value.c_str();
+    for (const auto &fields : node.layoutRules->rules) {
+      auto rule = rules.append_child("Rule");
+      for (const auto &[name, value] : fields)
+        rule.append_attribute(name.c_str()) = value.c_str();
+    }
+  }
   for (const auto &child : node.children) writeNode(element, child, editor, inTemplate);
 }
 
@@ -52,6 +63,52 @@ std::string toString(const pugi::xml_document &document) {
 }
 
 using NamespaceMap = std::map<std::string, std::string>;
+
+bool builtinElement(pugi::xml_node node, const char *localName, NamespaceMap namespaces) {
+  for (auto attr : node.attributes()) {
+    const std::string name = attr.name();
+    if (name == "xmlns") namespaces[""] = attr.value();
+    else if (name.starts_with("xmlns:")) namespaces[name.substr(6)] = attr.value();
+  }
+  const std::string name = node.name();
+  const auto colon = name.find(':');
+  const auto prefix = colon == std::string::npos ? "" : name.substr(0, colon);
+  const auto local = colon == std::string::npos ? name : name.substr(colon + 1);
+  return local == localName && namespaces.contains(prefix) && namespaces.at(prefix) == hiyui::XmlBuiltinNamespaceUri;
+}
+
+bool readLayoutAttachment(pugi::xml_node element, DesignLayoutRules &rules,
+                           NamespaceMap namespaces, size_t &count, int depth, std::string &error) {
+  const auto fields = [&](pugi::xml_node node, Attributes &values) {
+    if (++count > 4096 || !uniqueAttributes(node, error)) return false;
+    for (auto attr : node.attributes()) {
+      const std::string name = attr.name();
+      if (name == "xmlns" || name.starts_with("xmlns:")) continue;
+      values.emplace(name, attr.value());
+    }
+    return true;
+  };
+  if (depth > 64 || !fields(element, rules.base)) { error = "布局规则数量、深度或属性无效"; return false; }
+  for (auto attr : element.attributes()) {
+    const std::string name = attr.name();
+    if (name == "xmlns") namespaces[""] = attr.value();
+    else if (name.starts_with("xmlns:")) namespaces[name.substr(6)] = attr.value();
+  }
+  for (auto child : element.children()) {
+    if (child.type() == pugi::node_comment || child.type() == pugi::node_pi) continue;
+    if (child.type() != pugi::node_element || !builtinElement(child, "Rule", namespaces) || depth >= 64) {
+      error = "LayoutRules 只接受 Rule 条件"; return false;
+    }
+    for (auto nested : child.children())
+      if (nested.type() != pugi::node_comment && nested.type() != pugi::node_pi) {
+        error = "Rule 不接受子节点或文本"; return false;
+      }
+    Attributes values;
+    if (!fields(child, values)) { error = "Rule 数量或属性无效"; return false; }
+    rules.rules.push_back(std::move(values));
+  }
+  return true;
+}
 
 bool readNode(pugi::xml_node element, DesignNode &node, const ComponentCatalog &catalog,
               const ComponentEntry *itemOwner, NodeKind kind, NamespaceMap namespaces,
@@ -110,6 +167,14 @@ bool readNode(pugi::xml_node element, DesignNode &node, const ComponentCatalog &
       error = "节点文本请写入对应属性"; return false;
     }
     if (child.type() != pugi::node_element) continue;
+    if (builtinElement(child, "LayoutRules", namespaces)) {
+      if (kind != NodeKind::Component || entry->metadata.resourceOnly || node.layoutRules) {
+        error = "非资源组件只能附加一组 LayoutRules"; return false;
+      }
+      node.layoutRules.emplace();
+      if (!readLayoutAttachment(child, *node.layoutRules, namespaces, count, depth + 1, error)) return false;
+      continue;
+    }
     NodeKind childKind = NodeKind::Component;
     const auto mode = entry->metadata.childMode;
     if (kind == NodeKind::Component && mode == hiyui::XmlChildMode::Template) {
@@ -533,6 +598,205 @@ DocumentState loginDocument() {
       </HBox>
     </Card>
   </Box>
+</HIYDesignUI>)xml";
+  DocumentState value;
+  std::string error;
+  if (!parseProject(xml, value, error)) return emptyDocument();
+  return value;
+}
+
+DocumentState adaptiveDocument() {
+  const std::string xml = R"xml(<HIYDesignUI version="1" title="多端工作台" device="web" width="1280" height="800" nextId="1">
+  <WindowFrame xmlns="urn:hiyui:ui" id="root" fill="both" wideMinWidth="840"
+      narrowNavigation="Drawer" wideNavigation="Docked" navigationWidth="224"
+      drawerWidth="280" drawerMaxWidthPercent="86" dockedNavigationFullHeight="true">
+    <FrameHeader id="header">
+      <HBox id="headerBar" fill="width" bg="#ffffff">
+        <LayoutRules host="root" paddingX="12" paddingY="8" gap="8">
+          <Rule minHostWidth="840" paddingX="24" gap="12"/>
+          <Rule maxHostHeight="520" paddingY="4"/>
+        </LayoutRules>
+        <FrameNavigationToggle id="navigationToggle" size="44" tooltip="展开或收起导航"/>
+        <Label id="pageTitle" text="工作台" fontSize="20" color="#172033" width="0" flex="1"/>
+        <Label id="headerContext" text="团队空间 / 项目概览" fontSize="13" color="#667085">
+          <LayoutRules host="root" hidden="true">
+            <Rule minHostWidth="840" hidden="false"/>
+          </LayoutRules>
+        </Label>
+        <Avatar id="profileAvatar" text="林" size="36" bg="#e8efff" color="#365edc"/>
+      </HBox>
+    </FrameHeader>
+    <FrameNavigation id="navigation">
+      <VBox id="sidebar" fill="both" padding="16" gap="16" bg="#ffffff">
+        <HBox id="workspaceHeading" fill="width" gap="8">
+          <Label id="workspaceName" text="HIY-UI" fontSize="19" color="#172033" width="0" flex="1"/>
+          <FrameNavigationToggle id="closeNavigation" size="44" tooltip="收起导航"/>
+        </HBox>
+        <Label id="workspaceSubtitle" text="产品设计与团队协作" fontSize="12" color="#667085" fill="width"/>
+        <List id="workspaceProjects" fill="width" height="0" flex="1">
+          <Item text="客户工作台"/>
+          <Item text="移动端体验"/>
+          <Item text="组件设计规范"/>
+          <Item text="品牌资源整理"/>
+        </List>
+        <VBox id="storageSummary" fill="width" gap="8">
+          <LayoutRules host="root" hidden="false">
+            <Rule maxHostHeight="520" hidden="true"/>
+          </LayoutRules>
+          <Label id="storageTitle" text="团队存储" fontSize="13" color="#344054"/>
+          <Progress id="storageProgress" value="36" fill="width" height="6" showText="false" activeColor="#365edc" trackColor="#e8efff"/>
+          <Label id="storageCaption" text="3.6 GB / 10 GB" fontSize="12" color="#667085" fill="width"/>
+        </VBox>
+      </VBox>
+    </FrameNavigation>
+    <FrameContent id="content">
+      <VBox id="page" fill="both" scroll="Vertical" bg="#f3f5fa">
+        <LayoutRules host="root" paddingX="12" paddingY="16" gap="16">
+          <Rule minHostWidth="840" paddingX="24" paddingY="24" gap="20"/>
+          <Rule maxHostHeight="520" paddingY="8" gap="12"/>
+        </LayoutRules>
+        <VBox id="welcome" fill="width" gap="6">
+          <Label id="welcomeTitle" text="下午好，林同学" fontSize="24" color="#172033" fill="width"/>
+          <Label id="welcomeDescription" text="把想法变成产品，从今天的小目标开始。" fontSize="13" color="#667085" fill="width">
+            <LayoutRules host="root" hidden="false">
+              <Rule maxHostHeight="520" hidden="true"/>
+            </LayoutRules>
+          </Label>
+        </VBox>
+        <FlowBox id="statistics" fill="width" gap="12" minChildWidth="144" maxChildWidth="400" childGrow="true">
+          <Card id="activeProjects" width="144" height="112" padding="14" gap="6" bg="#ffffff" radius="12" shadow="false">
+            <Label id="activeLabel" text="进行中项目" fontSize="12" color="#667085" fill="width"/>
+            <Label id="activeValue" text="12" fontSize="28" color="#172033" fill="width"/>
+            <Label id="activeTrend" text="本周新增 2 个" fontSize="11" color="#365edc" fill="width"/>
+          </Card>
+          <Card id="completedTasks" width="144" height="112" padding="14" gap="6" bg="#ffffff" radius="12" shadow="false">
+            <Label id="completedLabel" text="已完成任务" fontSize="12" color="#667085" fill="width"/>
+            <Label id="completedValue" text="86" fontSize="28" color="#172033" fill="width"/>
+            <Label id="completedTrend" text="本周完成 18 项" fontSize="11" color="#168267" fill="width"/>
+          </Card>
+          <Card id="reviewTasks" width="144" height="112" padding="14" gap="6" bg="#ffffff" radius="12" shadow="false">
+            <Label id="reviewLabel" text="等待评审" fontSize="12" color="#667085" fill="width"/>
+            <Label id="reviewValue" text="3" fontSize="28" color="#172033" fill="width"/>
+            <Label id="reviewCaption" text="下次评审 15:00" fontSize="11" color="#b86d18" fill="width"/>
+          </Card>
+          <Card id="teamMembers" width="144" height="112" padding="14" gap="6" bg="#ffffff" radius="12" shadow="false">
+            <Label id="membersLabel" text="团队成员" fontSize="12" color="#667085" fill="width"/>
+            <Label id="membersValue" text="8" fontSize="28" color="#172033" fill="width"/>
+            <Label id="membersCaption" text="设计 · 开发 · 测试" fontSize="11" color="#667085" fill="width"/>
+          </Card>
+        </FlowBox>
+        <VBox id="workArea" fill="width">
+          <LayoutRules host="page" flow="Column" gap="16">
+            <Rule minHostWidth="900" flow="Row" gap="20"/>
+          </LayoutRules>
+          <Card id="projectSettings" padding="16" gap="16" bg="#ffffff" radius="12" shadow="false">
+            <LayoutRules host="page" width="100%" flex="0">
+              <Rule minHostWidth="900" width="0" flex="2"/>
+            </LayoutRules>
+            <Label id="settingsTitle" text="项目设置" fontSize="20" color="#172033" fill="width"/>
+            <Label id="settingsDescription" text="客户工作台 · 第三次迭代" fontSize="12" color="#667085" fill="width"/>
+            <VBox id="projectFields" fill="width">
+              <LayoutRules host="projectSettings" flow="Column" gap="12">
+                <Rule minHostWidth="480" flow="Row"/>
+              </LayoutRules>
+              <VBox id="nameField" gap="8">
+                <LayoutRules host="projectSettings" width="100%" flex="0">
+                  <Rule minHostWidth="480" width="0" flex="1"/>
+                </LayoutRules>
+                <Label id="nameLabel" text="项目名称" fontSize="13" color="#344054"/>
+                <Input id="projectName" text="客户工作台" placeholder="输入项目名称" fill="width" height="44" fontSize="14"/>
+              </VBox>
+              <VBox id="ownerField" gap="8">
+                <LayoutRules host="projectSettings" width="100%" flex="0">
+                  <Rule minHostWidth="480" width="0" flex="1"/>
+                </LayoutRules>
+                <Label id="ownerLabel" text="负责人" fontSize="13" color="#344054"/>
+                <Dropdown id="projectOwner" selected="0" fill="width" height="44" fontSize="14" itemHeight="44">
+                  <Item text="林同学"/>
+                  <Item text="陈同学"/>
+                  <Item text="周同学"/>
+                </Dropdown>
+              </VBox>
+            </VBox>
+            <VBox id="deliveryFields" fill="width">
+              <LayoutRules host="projectSettings" flow="Column" gap="12">
+                <Rule minHostWidth="480" flow="Row"/>
+              </LayoutRules>
+              <VBox id="stageField" gap="8">
+                <LayoutRules host="projectSettings" width="100%" flex="0">
+                  <Rule minHostWidth="480" width="0" flex="1"/>
+                </LayoutRules>
+                <Label id="stageLabel" text="项目阶段" fontSize="13" color="#344054"/>
+                <Dropdown id="projectStage" selected="1" fill="width" height="44" fontSize="14" itemHeight="44">
+                  <Item text="需求整理"/>
+                  <Item text="界面设计"/>
+                  <Item text="开发联调"/>
+                  <Item text="交付验收"/>
+                </Dropdown>
+              </VBox>
+              <VBox id="deadlineField" gap="8">
+                <LayoutRules host="projectSettings" width="100%" flex="0">
+                  <Rule minHostWidth="480" width="0" flex="1"/>
+                </LayoutRules>
+                <Label id="deadlineLabel" text="预计交付" fontSize="13" color="#344054"/>
+                <Input id="projectDeadline" text="2026-11-06" placeholder="YYYY-MM-DD" fill="width" height="44" fontSize="14"/>
+              </VBox>
+            </VBox>
+            <VBox id="notesField" fill="width" gap="8">
+              <Label id="notesLabel" text="项目说明" fontSize="13" color="#344054"/>
+              <Input id="projectNotes" text="统一客户信息与项目进度，让团队随时掌握交付状态。" multiline="true" fill="width" fontSize="14">
+                <LayoutRules host="root" height="96">
+                  <Rule maxHostHeight="520" height="64"/>
+                </LayoutRules>
+              </Input>
+            </VBox>
+            <Checkbox id="reviewReminder" text="评审前提醒我" checked="true" fill="width" fontSize="13" color="#344054"/>
+            <VBox id="projectActions" fill="width">
+              <LayoutRules host="projectSettings" flow="Column" gap="8">
+                <Rule minHostWidth="400" flow="Row" gap="12"/>
+              </LayoutRules>
+              <Button id="saveProject" text="保存设置" height="44" bg="#365edc" color="#ffffff" fontSize="14" radius="8">
+                <LayoutRules host="projectSettings" width="100%" flex="0">
+                  <Rule minHostWidth="400" width="0" flex="1"/>
+                </LayoutRules>
+              </Button>
+              <Button id="saveDraft" text="暂存草稿" variant="Secondary" height="44" fontSize="14" radius="8">
+                <LayoutRules host="projectSettings" width="100%" flex="0">
+                  <Rule minHostWidth="400" width="0" flex="1"/>
+                </LayoutRules>
+              </Button>
+            </VBox>
+          </Card>
+          <VBox id="activityColumn" gap="16">
+            <LayoutRules host="page" width="100%" flex="0">
+              <Rule minHostWidth="900" width="0" flex="1"/>
+            </LayoutRules>
+            <Card id="weeklyPlan" fill="width" padding="16" gap="12" bg="#ffffff" radius="12" shadow="false">
+              <Label id="weeklyTitle" text="本周目标" fontSize="18" color="#172033" fill="width"/>
+              <Label id="weeklyCaption" text="交付进度 · 68%" fontSize="12" color="#667085" fill="width"/>
+              <Progress id="weeklyProgress" value="68" fill="width" height="6" showText="false" activeColor="#168267" trackColor="#e6f4ee"/>
+              <Checkbox id="taskResearch" text="完成需求访谈" checked="true" fill="width" fontSize="13" color="#344054"/>
+              <Checkbox id="taskWireframe" text="确认页面原型" checked="true" fill="width" fontSize="13" color="#344054"/>
+              <Checkbox id="taskReview" text="准备设计评审" fill="width" fontSize="13" color="#344054"/>
+            </Card>
+            <Card id="notifications" fill="width" padding="16" gap="12" bg="#ffffff" radius="12" shadow="false">
+              <Label id="notificationsTitle" text="消息通知" fontSize="18" color="#172033" fill="width"/>
+              <HBox id="projectUpdateRow" fill="width" gap="12">
+                <Label id="projectUpdateLabel" text="项目动态" fontSize="13" color="#344054" width="0" flex="1"/>
+                <Switch id="projectUpdates" checked="true"/>
+              </HBox>
+              <HBox id="dailyDigestRow" fill="width" gap="12">
+                <Label id="dailyDigestLabel" text="每日摘要" fontSize="13" color="#344054" width="0" flex="1"/>
+                <Switch id="dailyDigest" checked="false"/>
+              </HBox>
+              <Label id="notificationCaption" text="仅接收与你参与的项目有关的消息。" fontSize="12" color="#667085" fill="width"/>
+            </Card>
+          </VBox>
+        </VBox>
+        <Label id="footer" text="HIY-UI · 团队协作空间" fontSize="11" color="#667085" fill="width"/>
+      </VBox>
+    </FrameContent>
+  </WindowFrame>
 </HIYDesignUI>)xml";
   DocumentState value;
   std::string error;

@@ -12,6 +12,12 @@ namespace hiydesign {
 using Attributes = std::map<std::string, std::string>;
 enum class NodeKind { Component, Item, Template };
 
+struct DesignLayoutRules {
+  Attributes base;
+  std::vector<Attributes> rules;
+  bool operator==(const DesignLayoutRules &) const = default;
+};
+
 struct DesignNode {
   std::string type;
   std::string id;
@@ -20,6 +26,7 @@ struct DesignNode {
   bool locked = false;
   NodeKind kind = NodeKind::Component;
   std::string prefix;
+  std::optional<DesignLayoutRules> layoutRules;
   bool operator==(const DesignNode &) const = default;
 };
 
@@ -96,5 +103,6 @@ std::string componentKey(std::string_view namespaceUri, std::string_view localNa
 std::string nodeNamespace(const DesignNode &node);
 std::string nodeName(const DesignNode &node);
 void setGeometry(DesignNode &node, hiyui::Rect rect, bool position = true);
+bool responsiveSize(const DesignNode &node);
 
 }

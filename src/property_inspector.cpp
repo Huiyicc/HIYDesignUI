@@ -15,6 +15,14 @@ bool layoutField(const std::string &name) {
   return names.contains(name);
 }
 
+bool ruleControls(const DesignNode &node, const std::string &name) {
+  if (!node.layoutRules) return false;
+  const auto &base = node.layoutRules->base;
+  if (name == "fill" || name == "size") return base.contains("width") || base.contains("height");
+  if (name == "padding") return base.contains("paddingX") || base.contains("paddingY");
+  return base.contains(name);
+}
+
 PropertyItem group(PropertyId id, const char *name) {
   PropertyItem item;
   item.id = id;
@@ -113,9 +121,11 @@ void PropertyInspector::refresh(bool preserveEditor) {
     textEditor = property && property->editor == "darkText";
   }
   fields_.clear();
+  if (nodeId_ != document_.selected) ruleIndex_ = -1;
   nodeId_ = document_.selected;
   const auto *node = document_.find(nodeId_);
   if (!node) { grid_->properties({}); return; }
+  if (!node->layoutRules || ruleIndex_ >= static_cast<int>(node->layoutRules->rules.size())) ruleIndex_ = -1;
   std::vector<PropertyItem> groups;
   groups.push_back(group(1, "标识"));
   groups.push_back(group(2, "布局"));
@@ -161,6 +171,10 @@ void PropertyInspector::refresh(bool preserveEditor) {
     item.readOnly = node->locked || (parent && catalog_.automaticLayout(*parent) && (spec.name == "x" || spec.name == "y" || spec.name == "center"));
     if (parentEntry && parentEntry->metadata.design.layout == XmlDesignLayout::Managed &&
         (spec.name == "width" || spec.name == "height")) item.readOnly = true;
+    if (ruleControls(*node, spec.name)) {
+      item.readOnly = true;
+      item.description += "此字段由响应式布局控制，请在响应式分组编辑。";
+    }
     if (spec.kind == XmlAttributeKind::Boolean || spec.kind == XmlAttributeKind::Enumeration) {
       item.kind = PropertyKind::Enum;
       item.editor = "darkChoice";
@@ -179,6 +193,7 @@ void PropertyInspector::refresh(bool preserveEditor) {
     fields_[id++] = spec.name;
     groups[layoutField(spec.name) ? 1 : 2].children.push_back(std::move(item));
   }
+  appendLayoutProperties(groups, *node);
   grid_->properties(std::move(groups));
   if (!editingField.empty()) {
     for (const auto &[fieldId, field] : fields_) {
@@ -196,6 +211,143 @@ void PropertyInspector::refresh(bool preserveEditor) {
   }
 }
 
+void PropertyInspector::appendLayoutProperties(std::vector<PropertyItem> &groups, const DesignNode &node) {
+  const auto *entry = node.kind == NodeKind::Component ? catalog_.find(node.type) : nullptr;
+  if (!entry || entry->metadata.resourceOnly) return;
+  auto controls = group(4, "响应式布局");
+  auto mode = textItem(40, "编辑范围", std::to_string(ruleIndex_));
+  mode.kind = PropertyKind::Enum;
+  mode.editor = "darkChoice";
+  mode.options.push_back({"基础值", "-1"});
+  if (node.layoutRules)
+    for (size_t index = 0; index < node.layoutRules->rules.size(); ++index)
+      mode.options.push_back({"条件 " + std::to_string(index + 1), std::to_string(index)});
+  controls.children.push_back(std::move(mode));
+  fields_[40] = "$ruleMode";
+  auto action = textItem(41, "条件操作", "");
+  action.kind = PropertyKind::Enum;
+  action.editor = "darkChoice";
+  action.options = {{"选择操作", ""}, {"新增条件", "add"}};
+  if (ruleIndex_ >= 0) action.options.push_back({"删除当前条件", "remove"});
+  if (node.layoutRules) action.options.push_back({"移除全部规则", "clear"});
+  action.readOnly = node.locked;
+  controls.children.push_back(std::move(action));
+  fields_[41] = "$ruleAction";
+  const auto &metadata = catalog_.schema().document;
+  const auto &specs = ruleIndex_ < 0 ? metadata.layoutRules.attributes : metadata.layoutRule.attributes;
+  const Attributes empty;
+  const auto &values = !node.layoutRules ? empty : ruleIndex_ < 0
+      ? node.layoutRules->base : node.layoutRules->rules[static_cast<size_t>(ruleIndex_)];
+  auto fields = group(5, ruleIndex_ < 0 ? "响应式基础值" : "当前条件差异");
+  const auto *parent = document_.parent(node.id);
+  const auto *parentEntry = parent ? catalog_.find(parent->type) : nullptr;
+  PropertyId id = fields_.rbegin()->first + 1;
+  for (const auto &spec : specs) {
+    const bool boundary = spec.name.find("Host") != std::string::npos;
+    const auto current = values.find(spec.name);
+    auto item = textItem(id, spec.name, current == values.end() ? "" : current->second);
+    item.defaultValue = PropertyValue("");
+    item.modified = current != values.end();
+    item.readOnly = node.locked;
+    item.description = spec.description;
+    if (parentEntry && parentEntry->metadata.design.layout == XmlDesignLayout::Managed &&
+        (spec.name == "width" || spec.name == "height")) {
+      item.readOnly = true;
+      item.description += "尺寸由父布局分配。";
+    }
+    if (boundary) item.description += "宿主逻辑内容尺寸；下界包含、上界不包含，上界 -1 表示不限。";
+    else if (ruleIndex_ >= 0) {
+      const auto base = node.layoutRules->base.find(spec.name);
+      item.description += base == node.layoutRules->base.end() ? "请先在基础值中设置此字段。"
+          : "基础值：" + base->second + "；清空或重置后继承基础值。";
+    } else if (spec.name != "host") item.description += "清空时使用组件原有配置；有条件差异时需保留基础值。";
+    if (spec.name == "host" || spec.kind == XmlAttributeKind::Enumeration || spec.kind == XmlAttributeKind::Boolean) {
+      item.kind = PropertyKind::Enum;
+      item.editor = "darkChoice";
+      item.options.push_back({spec.name == "host" ? "直接父容器" : ruleIndex_ < 0 ? "组件配置" : "继承基础值", ""});
+      if (spec.name == "host") {
+        for (auto *ancestor = document_.parent(node.id); ancestor; ancestor = document_.parent(ancestor->id)) {
+          if (ancestor->kind != NodeKind::Component) continue;
+          bool inTemplate = false;
+          for (auto *scope = document_.parent(ancestor->id); scope; scope = document_.parent(scope->id))
+            if (scope->kind == NodeKind::Template) inTemplate = true;
+          const auto *hostEntry = catalog_.find(ancestor->type);
+          if (!inTemplate && hostEntry && !hostEntry->metadata.resourceOnly)
+            item.options.push_back({ancestor->id, ancestor->id});
+        }
+      } else if (spec.kind == XmlAttributeKind::Boolean) {
+        item.options.push_back({"true", "true"});
+        item.options.push_back({"false", "false"});
+        bool value = false;
+        if (current != values.end() && xmlTryParseBool(current->second, value)) item.value = value ? "true" : "false";
+      } else for (const auto &option : spec.enumValues) item.options.push_back({option.name, option.name});
+    }
+    fields_[id++] = "$rule." + spec.name;
+    fields.children.push_back(std::move(item));
+  }
+  groups.insert(groups.begin() + 2, std::move(controls));
+  groups.insert(groups.begin() + 3, std::move(fields));
+}
+
+void PropertyInspector::submitLayout(PropertyCommitRequest &request, const std::string &field) {
+  const auto &change = request.change();
+  const auto *text = change.value.get<std::string>();
+  if (!text) { request.reject("规则值无效"); return; }
+  DesignDocument candidate;
+  candidate.state = document_.state;
+  auto *node = candidate.find(nodeId_);
+  if (!node) { request.reject("组件已删除"); return; }
+  if (field == "$ruleMode") {
+    int64_t index = -1;
+    if (!xmlTryParseInt(*text, index) || index < -1 ||
+        (index >= 0 && (!node->layoutRules || index >= static_cast<int64_t>(node->layoutRules->rules.size())))) {
+      request.reject("条件已失效"); return;
+    }
+    ruleIndex_ = static_cast<int>(index);
+    request.accept();
+    if (refreshRequested) refreshRequested();
+    return;
+  }
+  if (node->locked) { request.reject("请先解除组件锁定"); return; }
+  int nextIndex = ruleIndex_;
+  if (field == "$ruleAction") {
+    if (text->empty()) { request.accept(); return; }
+    if (*text == "add") {
+      if (!node->layoutRules) node->layoutRules.emplace();
+      nextIndex = static_cast<int>(node->layoutRules->rules.size());
+      node->layoutRules->rules.emplace_back();
+    } else if (*text == "clear") {
+      node->layoutRules.reset();
+      nextIndex = -1;
+    } else if (*text == "remove" && node->layoutRules && ruleIndex_ >= 0 &&
+               ruleIndex_ < static_cast<int>(node->layoutRules->rules.size())) {
+      node->layoutRules->rules.erase(node->layoutRules->rules.begin() + ruleIndex_);
+      nextIndex = -1;
+    } else { request.reject("条件已失效"); return; }
+  } else {
+    const auto name = field.substr(6);
+    if (!node->layoutRules) node->layoutRules.emplace();
+    auto &rules = *node->layoutRules;
+    if (ruleIndex_ >= static_cast<int>(rules.rules.size())) { request.reject("条件已失效"); return; }
+    auto &values = ruleIndex_ < 0 ? rules.base : rules.rules[static_cast<size_t>(ruleIndex_)];
+    if (text->empty() || change.origin == PropertyChangeOrigin::Reset) values.erase(name);
+    else {
+      if (ruleIndex_ >= 0 && name.find("Host") == std::string::npos && !rules.base.contains(name)) {
+        request.reject("请先为 " + name + " 设置响应式基础值"); return;
+      }
+      values[name] = *text;
+    }
+    if (rules.base.empty() && rules.rules.empty()) node->layoutRules.reset();
+  }
+  std::string error = catalog_.validate(layoutXml(candidate.state));
+  if (!error.empty()) { request.reject(error); return; }
+  if (!apply || !apply(std::move(candidate.state), nodeId_, error)) {
+    request.reject(error.empty() ? "预览更新失败" : error); return;
+  }
+  ruleIndex_ = nextIndex;
+  request.accept();
+}
+
 bool PropertyInspector::commit() {
   if (!grid_) return true;
   const auto editor = grid_->editor();
@@ -210,6 +362,7 @@ void PropertyInspector::submit(PropertyCommitRequest &request) {
   const auto &change = request.change();
   const auto field = fields_.find(change.id);
   if (field == fields_.end()) { request.reject("属性已失效"); return; }
+  if (field->second.starts_with("$rule")) { submitLayout(request, field->second); return; }
   DesignDocument candidate;
   candidate.state = document_.state;
   auto *node = candidate.find(nodeId_);
@@ -230,6 +383,14 @@ void PropertyInspector::submit(PropertyCommitRequest &request) {
     }
     selection = *text;
     node->id = *text;
+    const auto renameHost = [&](auto &&self, DesignNode &value) -> void {
+      if (value.layoutRules) {
+        auto host = value.layoutRules->base.find("host");
+        if (host != value.layoutRules->base.end() && host->second == nodeId_) host->second = selection;
+      }
+      for (auto &child : value.children) self(self, child);
+    };
+    renameHost(renameHost, *node);
   } else {
     const auto specs = catalog_.attributes(candidate, *node);
     const auto spec = std::find_if(specs.begin(), specs.end(), [&](const auto &value) { return value.name == name; });

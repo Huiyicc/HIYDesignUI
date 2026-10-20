@@ -5,6 +5,14 @@
 #include <hiyui/xml/xml_registry.h>
 
 namespace hiydesign {
+
+bool responsiveSize(const DesignNode &node) {
+  if (!node.layoutRules) return false;
+  for (const char *name : {"width", "height", "minWidth", "minHeight", "maxWidth", "maxHeight", "flex"})
+    if (node.layoutRules->base.contains(name)) return true;
+  return false;
+}
+
 namespace {
 template <typename Node> Node *findNode(Node &node, const std::string &id) {
   if (node.id == id) return &node;
@@ -36,14 +44,29 @@ const DesignNode *DesignDocument::parent(const std::string &id) const {
 }
 
 std::string DesignDocument::assignIds(DesignNode &node) {
-  std::string prefix = nodeName(node);
-  std::transform(prefix.begin(), prefix.end(), prefix.begin(),
-                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-  do {
-    node.id = prefix + std::to_string(state.nextId++);
-    if (state.nextId == 0) state.nextId = 1;
-  } while (find(node.id));
-  for (auto &child : node.children) assignIds(child);
+  std::map<std::string, std::string> renamed;
+  const auto assign = [&](auto &&self, DesignNode &value) -> void {
+    const auto oldId = value.id;
+    std::string prefix = nodeName(value);
+    std::transform(prefix.begin(), prefix.end(), prefix.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    do {
+      value.id = prefix + std::to_string(state.nextId++);
+      if (state.nextId == 0) state.nextId = 1;
+    } while (find(value.id));
+    if (!oldId.empty()) renamed[oldId] = value.id;
+    for (auto &child : value.children) self(self, child);
+  };
+  assign(assign, node);
+  const auto remap = [&](auto &&self, DesignNode &value) -> void {
+    if (value.layoutRules) {
+      auto host = value.layoutRules->base.find("host");
+      if (host != value.layoutRules->base.end() && renamed.contains(host->second))
+        host->second = renamed.at(host->second);
+    }
+    for (auto &child : value.children) self(self, child);
+  };
+  remap(remap, node);
   return node.id;
 }
 

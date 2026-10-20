@@ -61,7 +61,7 @@ private:
   void previewObject();
   void editPreviewData();
   void order(int direction);
-  void newProject(bool sample);
+  void newProject(DocumentState value);
   void openProject();
   void save(bool saveAs = false, std::function<void()> after = {});
   void exportLayout(bool withWindow = false);

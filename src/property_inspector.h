@@ -17,6 +17,7 @@ public:
   bool commit();
   void resetSelected();
   std::function<bool(DocumentState, std::string, std::string &)> apply;
+  std::function<void()> refreshRequested;
 
 private:
   DesignDocument &document_;
@@ -26,6 +27,9 @@ private:
   hiyui::Ref<hiyui::Input> textInput_;
   std::map<hiyui::PropertyId, std::string> fields_;
   std::string nodeId_;
+  int ruleIndex_ = -1;
+  void appendLayoutProperties(std::vector<hiyui::PropertyItem> &groups, const DesignNode &node);
+  void submitLayout(hiyui::PropertyCommitRequest &request, const std::string &field);
   void submit(hiyui::PropertyCommitRequest &request);
 };
 

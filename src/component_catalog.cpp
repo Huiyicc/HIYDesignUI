@@ -62,6 +62,7 @@ bool ComponentCatalog::container(const DesignDocument &document, const DesignNod
 }
 
 bool ComponentCatalog::automaticLayout(const DesignNode &node) const {
+  if (node.layoutRules && node.layoutRules->base.contains("flow")) return true;
   const auto *entry = node.kind == NodeKind::Component ? find(node.type) : nullptr;
   return entry && entry->metadata.design.layout != XmlDesignLayout::Absolute;
 }
