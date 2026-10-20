@@ -391,7 +391,49 @@ int DesignSurface::guidePosition(bool vertical, Point screen) const {
   const auto point = content_->toLocalPx(screen);
   float scale = 1;
   content_.with([&](VBox &content) { scale = scaleOf(content); });
-  return int(std::lround((vertical ? point.x : point.y) / scale));
+  int position = int(std::lround((vertical ? point.x : point.y) / scale));
+  if (HotkeyManager::ctrlPressed() || !inside(screen)) return position;
+
+  const auto intersect = [](Rect a, Rect b) {
+    const int x = std::max(a.x, b.x), y = std::max(a.y, b.y);
+    return Rect{x, y, std::max(0, std::min(a.x + a.w, b.x + b.w) - x),
+                      std::max(0, std::min(a.y + a.h, b.y + b.h) - y)};
+  };
+  Rect viewport, client;
+  viewport_.with([&](VBox &view) { viewport = transformed(view); });
+  content_.with([&](VBox &content) { client = transformed(content); });
+  const auto origin = content_->boundsPx();
+  const int limit = vertical ? document_.state.width : document_.state.height;
+  const int pointer = vertical ? screen.x : screen.y;
+  int nearest = std::max(1, int(std::lround(6 * scale))) + 1;
+  const auto visit = [&](auto &&self, const DesignNode &node, Rect clip) -> void {
+    const auto ref = widget(node.id);
+    if (!ref || !ref->isVisible()) return;
+    const auto bounds = screenBounds(node.id);
+    clip = intersect(clip, bounds);
+    if (clip.w <= 0 || clip.h <= 0) return;
+    const auto layout = ref->boundsPx();
+    const int start = vertical ? bounds.x : bounds.y;
+    const int length = vertical ? bounds.w : bounds.h;
+    const int visibleStart = vertical ? clip.x : clip.y;
+    const int visibleEnd = visibleStart + (vertical ? clip.w : clip.h);
+    const int layoutStart = vertical ? layout.x - origin.x : layout.y - origin.y;
+    const int layoutLength = vertical ? layout.w : layout.h;
+    for (int part = 0; part < 3; ++part) {
+      const int target = int(std::lround(start + length * part / 2.0));
+      if (target < visibleStart || target > visibleEnd) continue;
+      const int aligned = int(std::lround((layoutStart + layoutLength * part / 2.0) / scale));
+      if (aligned < 0 || aligned > limit) continue;
+      const int distance = std::abs(pointer - target);
+      if (distance < nearest) {
+        nearest = distance;
+        position = aligned;
+      }
+    }
+    for (const auto &child : node.children) self(self, child, clip);
+  };
+  visit(visit, document_.state.root, intersect(viewport, client));
+  return position;
 }
 
 int DesignSurface::guideAt(Point screen) const {
@@ -477,7 +519,7 @@ void DesignSurface::begin(Point screen) {
     for (int i = 0; i < 8; ++i)
       if (contains({points[i].x - radius, points[i].y - radius, radius * 2, radius * 2}, screen)) handle_ = i;
   }
-  if (tool_.empty() && handle_ < 0 && !HotkeyManager::ctrlPressed()) {
+  if (tool_.empty() && handle_ < 0) {
     const int guide = guideAt(screen);
     if (guide >= 0) { beginGuide(document_.state.guides[guide].vertical, guide, screen); return; }
   }
@@ -510,7 +552,7 @@ void DesignSurface::drag(Point screen) {
     auto &guide = document_.state.guides[guideIndex_];
     guide.position = guidePosition(guide.vertical, screen);
     if (onStatus) onStatus(std::string(guide.vertical ? "辅助线 X " : "辅助线 Y ") +
-                           std::to_string(guide.position) + " · 拖回标尺删除");
+                           std::to_string(guide.position) + " · Ctrl 忽略吸附 · 拖回标尺删除");
     refresh();
     return;
   }
