@@ -3,12 +3,14 @@
 #include "design_document.h"
 #include <filesystem>
 #include <hiyui/xml/xml_context.h>
+#include <hiyui/widget/title_bar.h>
 
 namespace hiydesign {
 class ComponentCatalog;
 struct ComponentEntry;
 
 std::string layoutXml(const DocumentState &document);
+hiyui::TitleBarProps previewTitleBar(const DocumentState &document);
 std::string windowXml(const DocumentState &document);
 std::string projectXml(const DocumentState &document);
 bool parseProject(const std::string &xml, DocumentState &document, std::string &error);

@@ -59,7 +59,7 @@ DesignSurface::~DesignSurface() {
   host_.destroy();
 }
 
-void DesignSurface::init(Widget &parent, const TitleBarProps &titleBar) {
+void DesignSurface::init(Widget &parent) {
   Box host({.bg = 0x1e1e1e});
   host.init(parent).fill().ref(host_).scrollMode(ScrollMode::Off);
   appearance_.background(host, EditorColor::Background);
@@ -80,7 +80,6 @@ void DesignSurface::init(Widget &parent, const TitleBarProps &titleBar) {
   CustomDraw chrome;
   chrome.init(device).pos(0, 0).ref(chrome_).clickable(false)
       .painter(std::make_unique<FramePainter>(*this));
-  device(TitleBar(titleBar).ref(titleBar_));
   VBox content;
   content.init(device).ref(content_).surface(SurfaceRole::Background)
       .scrollMode(ScrollMode::Off).scrollable(false);
@@ -124,6 +123,11 @@ void DesignSurface::arrange() {
   stage_->posPx(ruler, ruler).sizePx(width, height);
   overlay_->sizePx(width, height);
   const auto &state = document_.state;
+  if (frameDevice_ != state.device) {
+    titleBar_.destroy();
+    device_.with([&](Box &device) { device(TitleBar(previewTitleBar(state)).ref(titleBar_)); });
+    frameDevice_ = state.device;
+  }
   const bool customTitle = state.device >= 2 && state.borderless;
   const int border = px(state.device == 0 ? 8 : 1);
   const int top = state.device == 0 ? 0 : border;

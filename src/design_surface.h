@@ -16,7 +16,7 @@ class DesignSurface {
 public:
   DesignSurface(DesignDocument &document, const ComponentCatalog &catalog, EditorAppearance &appearance);
   ~DesignSurface();
-  void init(hiyui::Widget &parent, const hiyui::TitleBarProps &titleBar);
+  void init(hiyui::Widget &parent);
   bool reload(std::string &error);
   bool select(std::string id);
   void tool(std::string type);
@@ -67,6 +67,7 @@ private:
   float zoom_ = 1;
   bool fit_ = true;
   bool arranging_ = false;
+  int frameDevice_ = -1;
   bool moved_ = false;
   void arrange();
   void scroll();

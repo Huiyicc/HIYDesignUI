@@ -2,6 +2,7 @@
 
 #include "component_catalog.h"
 #include "editor_palette.h"
+#include <hiyui/widget/color_picker.h>
 #include <hiyui/widget/input.h>
 #include <hiyui/widget/property_grid.h>
 #include <functional>
@@ -25,9 +26,14 @@ private:
   EditorAppearance &appearance_;
   hiyui::Ref<hiyui::PropertyGrid> grid_;
   hiyui::Ref<hiyui::Input> textInput_;
+  hiyui::Ref<hiyui::ColorPicker> colorInput_;
   std::map<hiyui::PropertyId, std::string> fields_;
+  std::map<hiyui::PropertyId, hiyui::XmlAttributeSpec> specs_;
   std::string nodeId_;
   int ruleIndex_ = -1;
+  void buildTextEditor(hiyui::Widget &host, hiyui::PropertyEditor editor);
+  hiyui::PropertyItem attributeItem(hiyui::PropertyId id, const hiyui::XmlAttributeSpec &spec,
+      std::string value, const char *omittedLabel);
   void appendLayoutProperties(std::vector<hiyui::PropertyItem> &groups, const DesignNode &node);
   void submitLayout(hiyui::PropertyCommitRequest &request, const std::string &field);
   void submit(hiyui::PropertyCommitRequest &request);

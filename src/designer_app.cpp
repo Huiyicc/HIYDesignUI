@@ -319,7 +319,7 @@ void DesignerApp::buildWorkspace(Widget &parent) {
   canvas.init(work).fill().ref(canvasHost_);
   appearance_.background(canvas, background);
   surface_ = std::make_unique<DesignSurface>(document_, catalog_, appearance_);
-  surface_->init(canvas, previewTitleBar());
+  surface_->init(canvas);
   surface_->onSelection = [this] { selectionChanged(); };
   surface_->onChange = [this] { refresh(); };
   surface_->onToolChanged = [this] {
@@ -786,10 +786,6 @@ void DesignerApp::exportLayout(bool withWindow) {
     if (!error.empty() || !writeText(path, xml, error)) { log(error); return; }
     log("已导出 " + pathText(path));
   });
-}
-
-TitleBarProps DesignerApp::previewTitleBar() const {
-  return {.layout = window_->titleBarButtonsLeft() ? TitleBarLayout::Left : TitleBarLayout::Right};
 }
 
 void DesignerApp::preview() {

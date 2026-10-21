@@ -1,8 +1,12 @@
 #include "property_inspector.h"
 #include "project_io.h"
+#include <hiyui/widget/button.h>
 #include <hiyui/widget/checkbox.h>
 #include <hiyui/widget/dropdown.h>
 #include <algorithm>
+#include <charconv>
+#include <cmath>
+#include <cstdio>
 #include <set>
 
 namespace hiydesign {
@@ -39,6 +43,177 @@ PropertyItem textItem(PropertyId id, std::string name, std::string value) {
   item.editor = "darkText";
   return item;
 }
+
+std::string numberText(double value) {
+  char buffer[64];
+  const auto result = std::to_chars(buffer, buffer + sizeof(buffer), value);
+  return result.ec == std::errc() ? std::string(buffer, result.ptr) : std::string{};
+}
+
+std::string editorDefault(const XmlAttributeSpec &spec) {
+  if (spec.kind == XmlAttributeKind::Number && spec.defaultValue.present && !spec.defaultValue.nullValue)
+    return numberText(spec.defaultValue.number);
+  return defaultText(spec);
+}
+
+std::string displayedDefault(const XmlAttributeSpec &spec) {
+  if (!spec.defaultValue.present) return "未设置";
+  if (spec.defaultValue.nullValue) return "空";
+  if (spec.kind == XmlAttributeKind::Boolean) return spec.defaultValue.boolean ? "是" : "否";
+  if (spec.kind == XmlAttributeKind::Enumeration)
+    for (const auto &option : spec.enumValues)
+      if (option.value == spec.defaultValue.integer)
+        return option.displayName.empty() ? option.name : option.displayName;
+  const auto value = editorDefault(spec);
+  return value.empty() ? "空文本" : value;
+}
+
+std::string attributeDescription(const XmlAttributeSpec &spec) {
+  std::string result = spec.description;
+  if (!result.empty()) result += "\n";
+  result += "XML：" + spec.name;
+  if (spec.required) result += "（必填）";
+  result += "\n默认值：" + displayedDefault(spec);
+  switch (spec.kind) {
+  case XmlAttributeKind::Integer:
+    result += "\n整数范围：" + std::to_string(spec.minInteger) + " 至 " + std::to_string(spec.maxInteger);
+    break;
+  case XmlAttributeKind::UnsignedInteger:
+    result += "\n整数范围：0 至 " + std::to_string(spec.maxUnsigned);
+    break;
+  case XmlAttributeKind::Number:
+    result += "\n数值范围：" + numberText(spec.minNumber) + " 至 " + numberText(spec.maxNumber);
+    break;
+  default: break;
+  }
+  result += "\n";
+  return result;
+}
+
+std::string stepNumber(const XmlAttributeSpec &spec, std::string text, int direction) {
+  if (text.empty()) text = editorDefault(spec);
+  if (text.empty()) text = "0";
+  if (spec.kind == XmlAttributeKind::Integer) {
+    int64_t value = 0;
+    if (!xmlTryParseInt(text, value)) return {};
+    if (direction < 0 && value > spec.minInteger) --value;
+    if (direction > 0 && value < spec.maxInteger) ++value;
+    return std::to_string(std::clamp(value, spec.minInteger, spec.maxInteger));
+  }
+  if (spec.kind == XmlAttributeKind::UnsignedInteger) {
+    uint64_t value = 0;
+    if (!xmlTryParseUInt(text, value)) return {};
+    if (direction < 0 && value > 0) --value;
+    if (direction > 0 && value < spec.maxUnsigned) ++value;
+    return std::to_string(std::min(value, spec.maxUnsigned));
+  }
+  double value = 0;
+  const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
+  if (parsed.ec != std::errc() || parsed.ptr != text.data() + text.size() || !std::isfinite(value)) return {};
+  return numberText(std::clamp(value + direction, spec.minNumber, spec.maxNumber));
+}
+
+uint32_t previewColor(const XmlAttributeSpec &spec, const std::string &text) {
+  uint32_t color = 0;
+  ThemeRole role = ThemeRole::Background;
+  bool isRole = false;
+  if (!xmlTryParseColor(text.empty() ? defaultText(spec) : text, color, role, isRole)) return 0;
+  if (isRole) return currentTheme().resolve(role);
+  return color <= 0xffffff ? color : 0;
+}
+}
+
+PropertyItem PropertyInspector::attributeItem(PropertyId id, const XmlAttributeSpec &spec,
+    std::string value, const char *omittedLabel) {
+  auto item = textItem(id, spec.displayName.empty() ? spec.name : spec.displayName, value);
+  item.description = attributeDescription(spec);
+  if (!spec.required) item.defaultValue = PropertyValue("");
+  specs_[id] = spec;
+  switch (spec.kind) {
+  case XmlAttributeKind::Integer:
+  case XmlAttributeKind::UnsignedInteger:
+  case XmlAttributeKind::Number:
+    item.editor = "xmlNumber";
+    break;
+  case XmlAttributeKind::Color:
+    item.editor = "xmlColor";
+    break;
+  case XmlAttributeKind::Boolean:
+  case XmlAttributeKind::Enumeration: {
+    item.kind = PropertyKind::Enum;
+    item.editor = "darkChoice";
+    item.options.push_back({omittedLabel, ""});
+    if (spec.kind == XmlAttributeKind::Boolean) {
+      item.options.push_back({"是", "true"});
+      item.options.push_back({"否", "false"});
+      bool parsed = false;
+      if (xmlTryParseBool(value, parsed)) {
+        value = parsed ? "true" : "false";
+        item.value = value;
+      }
+    } else {
+      for (const auto &option : spec.enumValues)
+        item.options.push_back({option.displayName.empty() ? option.name : option.displayName, option.name});
+    }
+    if (std::none_of(item.options.begin(), item.options.end(), [&](const auto &option) { return option.value == item.value; }))
+      item.options.push_back({value, value});
+    break;
+  }
+  default: break;
+  }
+  return item;
+}
+
+void PropertyInspector::buildTextEditor(Widget &host, PropertyEditor editor) {
+  const auto property = editor.property();
+  if (!property) return;
+  const auto found = specs_.find(editor.id());
+  const XmlAttributeSpec spec = found == specs_.end() ? XmlAttributeSpec{} : found->second;
+  auto omittedValue = editorDefault(spec);
+  const auto *node = document_.find(nodeId_);
+  if (node && node->layoutRules && ruleIndex_ >= 0 && fields_.contains(editor.id()) &&
+      fields_.at(editor.id()).starts_with("$rule.")) {
+    const auto base = node->layoutRules->base.find(spec.name);
+    if (base != node->layoutRules->base.end()) omittedValue = base->second;
+  }
+  colorInput_ = {};
+  Input input({.bg = 0x1e1e1e, .textColor = 0xcccccc, .fontSize = 12, .radius = 0});
+  input.init(host).width(0).flex(1).fillHeight().text(editor.text()).ref(textInput_);
+  input.padding(6, 3);
+  if (!omittedValue.empty()) input.placeholder(omittedValue.c_str());
+  appearance_.input(input);
+  if (property->editor == "xmlNumber") {
+    for (const int direction : {-1, 1}) {
+      Button button({.text = direction < 0 ? "−" : "+", .width = 22, .fontSize = 12, .radius = 0});
+      button.init(host).fillHeight().padding(0);
+      appearance_.button(button);
+      button.onClick([editor, spec, omittedValue, input = textInput_, direction] {
+        if (!editor) return;
+        const auto text = editor.text();
+        const auto value = stepNumber(spec, text.empty() ? omittedValue : text, direction);
+        if (!value.empty() && editor.setText(value) && input) input->text(value);
+      });
+    }
+  } else if (property->editor == "xmlColor") {
+    ColorPicker picker({.color = previewColor(spec, editor.text()), .size = ColorPickerSize::Small,
+                        .showAlpha = false, .presentation = PickerPresentation::Anchored});
+    picker.init(host).ref(colorInput_);
+    appearance_.bind(picker, [picker = colorInput_](Widget &, const EditorPalette &p) {
+      using C = EditorColor;
+      picker->palette({.bg = p[C::Panel], .inputBg = p[C::Background], .textColor = p[C::Text],
+          .secondaryTextColor = p[C::Muted], .borderColor = p[C::Border], .accentColor = p[C::Accent]});
+    });
+    picker.onChange([editor, input = textInput_](uint32_t color, uint8_t) {
+      char value[8];
+      std::snprintf(value, sizeof(value), "#%06X", static_cast<unsigned>(color & 0xffffff));
+      if (editor.setText(value) && input) input->text(value);
+    });
+  }
+  input.onChange([editor, spec, picker = colorInput_](const std::string &text) {
+    if (editor.setText(text) && picker) picker->color(previewColor(spec, text));
+  });
+  input.on(EventCode::Ready, [editor] { editor.commit(); });
+  editor.focusTarget(input);
 }
 
 void PropertyInspector::init(Widget &parent) {
@@ -56,15 +231,8 @@ void PropertyInspector::init(Widget &parent) {
         .pressedBg = p[C::Selected], .borderColor = p[C::Border], .secondaryTextColor = p[C::Muted]});
     grid->radius(0);
   });
-  grid.registerEditor("darkText", [this](Widget &host, PropertyEditor editor) {
-    Input input({.bg = 0x1e1e1e, .textColor = 0xcccccc, .fontSize = 12, .radius = 0});
-    input.init(host).fill().text(editor.text()).ref(textInput_);
-    input.padding(6, 3);
-    appearance_.input(input);
-    input.onChange([editor](const std::string &text) { editor.setText(text); });
-    input.on(EventCode::Ready, [editor] { editor.commit(); });
-    editor.focusTarget(input);
-  });
+  for (const char *name : {"darkText", "xmlNumber", "xmlColor"})
+    grid.registerEditor(name, [this](Widget &host, PropertyEditor editor) { buildTextEditor(host, editor); });
   grid.registerEditor("darkChoice", [this](Widget &host, PropertyEditor editor) {
     const auto property = editor.property();
     if (!property) return;
@@ -118,9 +286,10 @@ void PropertyInspector::refresh(bool preserveEditor) {
     editingText = active.text();
     editingValue = active.value();
     const auto property = active.property();
-    textEditor = property && property->editor == "darkText";
+    textEditor = property && (property->editor == "darkText" || property->editor == "xmlNumber" || property->editor == "xmlColor");
   }
   fields_.clear();
+  specs_.clear();
   if (nodeId_ != document_.selected) ruleIndex_ = -1;
   nodeId_ = document_.selected;
   const auto *node = document_.find(nodeId_);
@@ -130,7 +299,8 @@ void PropertyInspector::refresh(bool preserveEditor) {
   groups.push_back(group(1, "标识"));
   groups.push_back(group(2, "布局"));
   groups.push_back(group(3, "内容与外观"));
-  auto identity = textItem(10, node->kind == NodeKind::Component ? "id" : "编辑标识", node->id);
+  auto identity = textItem(10, node->kind == NodeKind::Component ? "标识" : "编辑标识", node->id);
+  identity.description = "组件标识；XML：id。";
   identity.readOnly = node->locked;
   groups[0].children.push_back(std::move(identity));
   fields_[10] = "$id";
@@ -150,7 +320,8 @@ void PropertyInspector::refresh(bool preserveEditor) {
   auto layout = textItem(13, "父布局", parent ? catalog_.automaticLayout(*parent) ? "自动排列" : "绝对定位" : "视口根节点");
   layout.readOnly = true;
   groups[0].children.push_back(std::move(layout));
-  auto uri = textItem(14, "namespace", nodeNamespace(*node));
+  auto uri = textItem(14, "命名空间", nodeNamespace(*node));
+  uri.description = "组件所属的 XML 命名空间；XML：xmlns。";
   uri.readOnly = true;
   groups[0].children.push_back(std::move(uri));
   auto children = textItem(15, "子节点", std::to_string(node->children.size()));
@@ -160,13 +331,8 @@ void PropertyInspector::refresh(bool preserveEditor) {
   PropertyId id = 100;
   for (const auto &spec : catalog_.attributes(document_, *node)) {
     if (spec.name == "id" && node->kind == NodeKind::Component) continue;
-    auto item = textItem(id, spec.name, attribute(*node, spec.name));
-    item.description = spec.description;
-    if (!item.description.empty()) item.description += "\n";
-    item.description += spec.required ? "必填属性。" : "默认值：" + defaultText(spec) + "；重置后使用组件默认值。";
-    if (spec.name == "width" || spec.name == "height" || spec.name == "maxWidth")
-      item.description += "尺寸单位为逻辑像素；-1 使用该组件的自动尺寸规则。";
-    item.defaultValue = PropertyValue("");
+    auto item = attributeItem(id, spec, attribute(*node, spec.name), "默认");
+    if (!spec.required) item.description += "重置后使用组件默认值。";
     item.modified = node->attributes.contains(spec.name);
     item.readOnly = node->locked || (parent && catalog_.automaticLayout(*parent) && (spec.name == "x" || spec.name == "y" || spec.name == "center"));
     if (parentEntry && parentEntry->metadata.design.layout == XmlDesignLayout::Managed &&
@@ -174,21 +340,6 @@ void PropertyInspector::refresh(bool preserveEditor) {
     if (ruleControls(*node, spec.name)) {
       item.readOnly = true;
       item.description += "此字段由响应式布局控制，请在响应式分组编辑。";
-    }
-    if (spec.kind == XmlAttributeKind::Boolean || spec.kind == XmlAttributeKind::Enumeration) {
-      item.kind = PropertyKind::Enum;
-      item.editor = "darkChoice";
-      item.options.push_back({"默认", ""});
-      if (spec.kind == XmlAttributeKind::Boolean) {
-        item.options.push_back({"true", "true"});
-        item.options.push_back({"false", "false"});
-        if (node->attributes.contains(spec.name)) {
-          bool value = false;
-          if (xmlTryParseBool(attribute(*node, spec.name), value)) item.value = value ? "true" : "false";
-        }
-      } else {
-        for (const auto &option : spec.enumValues) item.options.push_back({option.name, option.name});
-      }
     }
     fields_[id++] = spec.name;
     groups[layoutField(spec.name) ? 1 : 2].children.push_back(std::move(item));
@@ -203,6 +354,7 @@ void PropertyInspector::refresh(bool preserveEditor) {
         if (textEditor) {
           editor.setText(editingText);
           if (textInput_) textInput_->text(editingText);
+          if (colorInput_ && specs_.contains(fieldId)) colorInput_->color(previewColor(specs_.at(fieldId), editingText));
         }
         else editor.setValue(editingValue);
       }
@@ -245,11 +397,10 @@ void PropertyInspector::appendLayoutProperties(std::vector<PropertyItem> &groups
   for (const auto &spec : specs) {
     const bool boundary = spec.name.find("Host") != std::string::npos;
     const auto current = values.find(spec.name);
-    auto item = textItem(id, spec.name, current == values.end() ? "" : current->second);
-    item.defaultValue = PropertyValue("");
+    auto item = attributeItem(id, spec, current == values.end() ? "" : current->second,
+        ruleIndex_ < 0 ? "组件配置" : "继承基础值");
     item.modified = current != values.end();
     item.readOnly = node.locked;
-    item.description = spec.description;
     if (parentEntry && parentEntry->metadata.design.layout == XmlDesignLayout::Managed &&
         (spec.name == "width" || spec.name == "height")) {
       item.readOnly = true;
@@ -261,26 +412,19 @@ void PropertyInspector::appendLayoutProperties(std::vector<PropertyItem> &groups
       item.description += base == node.layoutRules->base.end() ? "请先在基础值中设置此字段。"
           : "基础值：" + base->second + "；清空或重置后继承基础值。";
     } else if (spec.name != "host") item.description += "清空时使用组件原有配置；有条件差异时需保留基础值。";
-    if (spec.name == "host" || spec.kind == XmlAttributeKind::Enumeration || spec.kind == XmlAttributeKind::Boolean) {
+    if (spec.name == "host") {
       item.kind = PropertyKind::Enum;
       item.editor = "darkChoice";
-      item.options.push_back({spec.name == "host" ? "直接父容器" : ruleIndex_ < 0 ? "组件配置" : "继承基础值", ""});
-      if (spec.name == "host") {
-        for (auto *ancestor = document_.parent(node.id); ancestor; ancestor = document_.parent(ancestor->id)) {
-          if (ancestor->kind != NodeKind::Component) continue;
-          bool inTemplate = false;
-          for (auto *scope = document_.parent(ancestor->id); scope; scope = document_.parent(scope->id))
-            if (scope->kind == NodeKind::Template) inTemplate = true;
-          const auto *hostEntry = catalog_.find(ancestor->type);
-          if (!inTemplate && hostEntry && !hostEntry->metadata.resourceOnly)
-            item.options.push_back({ancestor->id, ancestor->id});
-        }
-      } else if (spec.kind == XmlAttributeKind::Boolean) {
-        item.options.push_back({"true", "true"});
-        item.options.push_back({"false", "false"});
-        bool value = false;
-        if (current != values.end() && xmlTryParseBool(current->second, value)) item.value = value ? "true" : "false";
-      } else for (const auto &option : spec.enumValues) item.options.push_back({option.name, option.name});
+      item.options.push_back({"直接父容器", ""});
+      for (auto *ancestor = document_.parent(node.id); ancestor; ancestor = document_.parent(ancestor->id)) {
+        if (ancestor->kind != NodeKind::Component) continue;
+        bool inTemplate = false;
+        for (auto *scope = document_.parent(ancestor->id); scope; scope = document_.parent(scope->id))
+          if (scope->kind == NodeKind::Template) inTemplate = true;
+        const auto *hostEntry = catalog_.find(ancestor->type);
+        if (!inTemplate && hostEntry && !hostEntry->metadata.resourceOnly)
+          item.options.push_back({ancestor->id, ancestor->id});
+      }
     }
     fields_[id++] = "$rule." + spec.name;
     fields.children.push_back(std::move(item));

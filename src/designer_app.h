@@ -66,7 +66,6 @@ private:
   void save(bool saveAs = false, std::function<void()> after = {});
   void exportLayout(bool withWindow = false);
   void preview();
-  hiyui::TitleBarProps previewTitleBar() const;
   void confirmDiscard(std::function<void()> action);
   void completeConfirmation(bool saveFirst);
   void cancelConfirmation();

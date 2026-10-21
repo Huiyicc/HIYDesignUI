@@ -206,6 +206,13 @@ std::string layoutXml(const DocumentState &document) {
   return toString(xml);
 }
 
+hiyui::TitleBarProps previewTitleBar(const DocumentState &document) {
+  hiyui::TitleBarProps props;
+  props.layout = document.device == 4 ? hiyui::TitleBarLayout::Left : hiyui::TitleBarLayout::Right;
+  props.buttonStyle = document.device == 4 ? hiyui::TitleBarButtonStyle::MacOS : hiyui::TitleBarButtonStyle::Standard;
+  return props;
+}
+
 std::string windowXml(const DocumentState &document) {
   pugi::xml_document xml;
   auto window = xml.append_child("Window");
@@ -214,6 +221,11 @@ std::string windowXml(const DocumentState &document) {
   window.append_attribute("width") = document.width;
   window.append_attribute("height") = document.height;
   window.append_attribute("borderless") = document.device >= 2 && document.borderless;
+  if (document.device >= 2 && document.borderless) {
+    const auto titleBar = previewTitleBar(document);
+    window.append_attribute("titleBarLayout") = titleBar.layout == hiyui::TitleBarLayout::Left ? "Left" : "Right";
+    window.append_attribute("titleBarButtonStyle") = titleBar.buttonStyle == hiyui::TitleBarButtonStyle::MacOS ? "MacOS" : "Standard";
+  }
   writeNode(window, document.root, false);
   return toString(xml);
 }
